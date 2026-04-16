@@ -1,4 +1,4 @@
-"""Pipeline orchestrator: Phases 1-4 (SF pull → RFM → waterfall → suppression → fitting → ask strings → appeal codes)."""
+"""Pipeline orchestrator: Phases 1-5 (SF pull → RFM → waterfall → suppression → fitting → ask/codes → output files)."""
 
 import logging
 import sys
@@ -23,6 +23,8 @@ from suppression_engine import (
 from budget_fitting import fit_to_budget
 from ask_strings import compute_ask_strings, classify_reply_copy_tier
 from appeal_codes import generate_appeal_codes, validate_appeal_codes
+from output_files import generate_output_files
+from mic_writeback import PipelineWriteRecovery
 from diagnostic import (
     build_rfm_crosstab_rf,
     build_rfm_crosstab_rm,
@@ -234,29 +236,74 @@ def run_diagnostic() -> dict:
                     logger.warning(f"  {col}: {len(bad_high)} values >=$100 not rounded to $25")
         logger.info(f"  Ask rounding validation: {'PASS' if rounding_ok else 'FAIL'}")
 
-    # --- Step 15: Suppression audit log ---
+    # --- Step 15: Phase 5 — Output Files ---
+    logger.info("=" * 60)
+    logger.info("PHASE 5: OUTPUT FILES + MIC WRITE-BACK")
+    logger.info("=" * 60)
+
+    t0 = time.time()
+    output = generate_output_files(
+        waterfall_result, accounts_df, ask_df, reply_tiers, codes_df,
+        campaign_code=campaign.get("appeal_code", "DIAG") if campaign else "DIAG",
+        lane=campaign.get("lane", "Housefile") if campaign else "Housefile",
+        holdout_pct=5.0,  # 5% holdout per spec
+    )
+    timings["output_files"] = round(time.time() - t0, 1)
+
+    for w in output["warnings"]:
+        logger.warning(f"  {w}")
+
+    # ZIP preservation validation
+    printer_df = output["printer_df"]
+    zip_ok = True
+    if len(printer_df) > 0:
+        zips = printer_df["ZIP"]
+        non_empty_zips = zips[zips != ""]
+        short_zips = non_empty_zips[non_empty_zips.str.len() < 5]
+        if len(short_zips) > 0:
+            zip_ok = False
+            logger.warning(f"  ZIP validation FAIL: {len(short_zips)} ZIPs < 5 chars")
+        else:
+            logger.info(f"  ZIP validation PASS: {len(non_empty_zips):,} ZIPs, all >= 5 chars")
+
+    # Verify no 15-char code in Printer File
+    printer_has_15char = "InternalAppealCode" in printer_df.columns
+    if printer_has_15char:
+        logger.warning("  FAIL: InternalAppealCode column present in Printer File!")
+
+    # Verify Matchback has 15-char code
+    matchback_df = output["matchback_df"]
+    matchback_has_15char = "InternalAppealCode" in matchback_df.columns and matchback_df["InternalAppealCode"].notna().any()
+
+    # Suppression audit log
     audit_log = build_suppression_audit_log(waterfall_result, tier2_log)
-
-    # Upload audit log CSV to Drive
-    logger.info("Uploading suppression audit log to Drive...")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     audit_csv = audit_log.to_csv(index=False)
-    try:
-        audit_url = upload_csv_to_drive(
-            gc, f"suppression_audit_{timestamp}.csv", audit_csv
-        )
-    except Exception as e:
-        audit_url = f"FAILED: {e}"
-        logger.error(f"Audit log upload failed: {e}")
 
-    # --- Step 15: Write Draft tab ---
-    logger.info("Writing segment summary to Draft tab...")
-    try:
-        write_draft_tab(gc, segment_summary)
-        draft_status = f"OK — {len(segment_summary)} segment rows"
-    except Exception as e:
-        draft_status = f"FAILED: {e}"
-        logger.error(f"Draft tab write failed: {e}")
+    # --- Step 16: Pipeline Write Recovery (Drive → Sheets → SF) ---
+    pipeline = PipelineWriteRecovery()
+    write_status = pipeline.execute_writes(
+        gc,
+        printer_csv=output["printer_csv"],
+        matchback_csv=output["matchback_csv"],
+        suppression_audit_csv=audit_csv,
+        segment_summary=segment_summary,
+        campaign_code=campaign.get("appeal_code", "DIAG") if campaign else "DIAG",
+        campaign_appeal_code=campaign_appeal_code,
+        lane=campaign.get("lane", "Housefile") if campaign else "Housefile",
+    )
+
+    drive_urls = write_status.get("drive_urls", {})
+    audit_url = drive_urls.get("audit", "N/A")
+    printer_url = drive_urls.get("printer", "N/A")
+    matchback_url = drive_urls.get("matchback", "N/A")
+    draft_status = "OK — via pipeline write" if write_status.get("sheets_write") == "success" else "FAILED"
+
+    # Idempotency check: re-running approve_projection for same campaign_id
+    # should replace (not duplicate) Segment Detail rows — tested by the upsert logic
+    # in approve_projection which filters existing_df by campaign_id before appending.
+    logger.info(f"  Pipeline write status: Drive={write_status.get('drive_write')}, "
+                f"Sheets={write_status.get('sheets_write')}, "
+                f"SF={write_status.get('salesforce_write')}")
 
     # --- Step 16: Build diagnostic outputs ---
     logger.info("-" * 40)
@@ -325,6 +372,16 @@ def run_diagnostic() -> dict:
         {"Metric": "Ask Strings Computed", "Value": len(ask_df)},
         {"Metric": "Appeal Codes Generated", "Value": len(codes_df)},
         {"Metric": "Ask Rounding Valid", "Value": "PASS" if rounding_ok else "FAIL"},
+        {"Metric": "Printer File Rows", "Value": output["printer_count"]},
+        {"Metric": "Matchback File Rows", "Value": output["matchback_count"]},
+        {"Metric": "Housefile Suppression Rows", "Value": output["suppression_count"]},
+        {"Metric": "Holdout Count", "Value": output["holdout_count"]},
+        {"Metric": "ZIP Preservation", "Value": "PASS" if zip_ok else "FAIL"},
+        {"Metric": "Printer File URL", "Value": printer_url},
+        {"Metric": "Matchback File URL", "Value": matchback_url},
+        {"Metric": "Pipeline Drive Write", "Value": write_status.get("drive_write", "N/A")},
+        {"Metric": "Pipeline Sheets Write", "Value": write_status.get("sheets_write", "N/A")},
+        {"Metric": "Pipeline SF Write", "Value": write_status.get("salesforce_write", "N/A")},
     ])
 
     # Budget fit detail
@@ -399,8 +456,20 @@ def run_diagnostic() -> dict:
     for _, row in code_validation.iterrows():
         logger.info(f"  [{row['Status']}] {row['Check']}: {row['Detail']}")
 
-    logger.info(f"\nAudit log: {audit_url}")
-    logger.info(f"Diagnostic: {sheet_url}")
+    logger.info(f"\nPhase 5:")
+    logger.info(f"  Printer File: {output['printer_count']:,} rows")
+    logger.info(f"  Matchback File: {output['matchback_count']:,} rows")
+    logger.info(f"  Housefile Suppression: {output['suppression_count']:,} rows")
+    logger.info(f"  Holdout: {output['holdout_count']:,} donors excluded")
+    logger.info(f"  ZIP preservation: {'PASS' if zip_ok else 'FAIL'}")
+    logger.info(f"  15-char in Printer File: {'FAIL' if printer_has_15char else 'PASS (absent)'}")
+    logger.info(f"  15-char in Matchback File: {'PASS' if matchback_has_15char else 'FAIL (missing)'}")
+    logger.info(f"  Pipeline: Drive={write_status.get('drive_write')}, "
+                f"Sheets={write_status.get('sheets_write')}, SF={write_status.get('salesforce_write')}")
+    logger.info(f"  Printer: {printer_url}")
+    logger.info(f"  Matchback: {matchback_url}")
+    logger.info(f"  Audit log: {audit_url}")
+    logger.info(f"  Diagnostic: {sheet_url}")
 
     return {
         "gate_results": gate_results.to_dict(orient="records"),
@@ -409,6 +478,9 @@ def run_diagnostic() -> dict:
         "fit_info": fit_info,
         "sheet_url": sheet_url,
         "audit_url": audit_url,
+        "printer_url": printer_url,
+        "matchback_url": matchback_url,
+        "write_status": write_status,
         "timings": timings,
         "counts": {
             "accounts": len(accounts_df),
@@ -418,6 +490,11 @@ def run_diagnostic() -> dict:
             "total_mailable": total_mailable,
             "fitted": fit_info["fitted"],
             "trimmed": fit_info["trimmed"],
+            "printer_rows": output["printer_count"],
+            "matchback_rows": output["matchback_count"],
+            "suppression_rows": output["suppression_count"],
+            "holdout": output["holdout_count"],
+            "zip_ok": zip_ok,
         },
     }
 
