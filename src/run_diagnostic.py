@@ -1,4 +1,4 @@
-"""Pipeline orchestrator: Phase 1 diagnostic + Phase 2 waterfall assignment."""
+"""Pipeline orchestrator: Phase 1 diagnostic + Phase 2 waterfall + Phase 3 suppression/fitting."""
 
 import logging
 import sys
@@ -8,11 +8,19 @@ from salesforce_client import (
     connect_salesforce, fetch_accounts, fetch_opportunities,
     fetch_opportunities_cbnc, probe_sustainer_field,
 )
-from sheets_client import get_sheets_client, read_campaign_calendar, ensure_draft_tab, write_diagnostic, write_draft_tab
+from sheets_client import (
+    get_sheets_client, read_campaign_calendar, write_diagnostic,
+    write_draft_tab, upload_csv_to_drive,
+)
 from rfm_engine import compute_rfm
 from lifecycle import compute_lifecycle
 from cbnc import detect_cbnc
 from waterfall_engine import run_waterfall, build_segment_summary, build_suppression_summary
+from suppression_engine import (
+    apply_tier2_suppression, apply_segment_level_suppression,
+    build_suppression_audit_log,
+)
+from budget_fitting import fit_to_budget
 from diagnostic import (
     build_rfm_crosstab_rf,
     build_rfm_crosstab_rm,
@@ -25,6 +33,7 @@ from diagnostic import (
 )
 
 import pandas as pd
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,16 +43,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_diagnostic() -> dict:
-    """Execute the full pipeline: SF pull → RFM → lifecycle → CBNC → waterfall → output.
+def _pick_campaign_from_mic(mic_df: pd.DataFrame):
+    """Pick a real campaign from the MIC for budget fitting demo.
 
-    Returns dict with gate_results, waterfall summary, and sheet_url.
+    Selects the most recent DM housefile campaign with a budget_qty_mailed.
     """
+    if mic_df.empty:
+        return None
+
+    dm = mic_df[
+        (mic_df.get("channel", pd.Series("")).str.contains("Direct Mail", case=False, na=False))
+        & (mic_df.get("budget_qty_mailed", pd.Series(0)).apply(
+            lambda x: pd.to_numeric(x, errors="coerce")
+        ) > 0)
+    ]
+
+    if dm.empty:
+        # Try any row with a budget qty
+        dm = mic_df[mic_df.get("budget_qty_mailed", pd.Series(0)).apply(
+            lambda x: pd.to_numeric(x, errors="coerce")
+        ) > 0]
+
+    if dm.empty:
+        return None
+
+    # Take the last row (most recent)
+    row = dm.iloc[-1]
+    budget_qty = int(pd.to_numeric(row.get("budget_qty_mailed", 0), errors="coerce") or 0)
+    budget_cost = float(pd.to_numeric(row.get("budget_cost", 0), errors="coerce") or 0)
+    cpp = budget_cost / budget_qty if budget_qty > 0 else 0.48  # default CPP
+
+    return {
+        "campaign_name": row.get("campaign_name", "Unknown"),
+        "appeal_code": row.get("appeal_code", ""),
+        "budget_qty_mailed": budget_qty,
+        "budget_cost": budget_cost,
+        "cpp": round(cpp, 4),
+        "campaign_type": row.get("campaign_type", "Appeal") or "Appeal",
+    }
+
+
+def run_diagnostic() -> dict:
+    """Execute the full pipeline: SF → RFM → lifecycle → CBNC → waterfall → suppression → fitting."""
     timings = {}
 
     # --- Step 1: Connect to Salesforce ---
     logger.info("=" * 60)
-    logger.info("SEGMENTATION BUILDER — Phase 1 + Phase 2")
+    logger.info("SEGMENTATION BUILDER — Phase 1 + 2 + 3")
     logger.info("=" * 60)
 
     t0 = time.time()
@@ -51,42 +97,35 @@ def run_diagnostic() -> dict:
     timings["sf_connect"] = round(time.time() - t0, 1)
     logger.info(f"Salesforce connected ({timings['sf_connect']}s)")
 
-    # --- Step 2: Probe npsp__Sustainer__c ---
     sustainer_field_exists = probe_sustainer_field(sf)
-    logger.info(f"npsp__Sustainer__c exists: {sustainer_field_exists}")
 
-    # --- Step 3: Pass 1 — Fetch accounts ---
+    # --- Step 2-4: Fetch data ---
     t0 = time.time()
     accounts_df = fetch_accounts(sf)
-    timings["pass1_accounts"] = round(time.time() - t0, 1)
+    timings["pass1"] = round(time.time() - t0, 1)
 
-    # --- Step 4: Pass 2 — Fetch opportunities (5-year for RFM) ---
     t0 = time.time()
     opps_df = fetch_opportunities(sf)
-    timings["pass2_opps"] = round(time.time() - t0, 1)
+    timings["pass2"] = round(time.time() - t0, 1)
 
-    # --- Step 5: Pass 3 — Fetch opportunities (10-year for CBNC) ---
     t0 = time.time()
     cbnc_opps_df = fetch_opportunities_cbnc(sf)
-    timings["pass3_cbnc"] = round(time.time() - t0, 1)
+    timings["pass3"] = round(time.time() - t0, 1)
 
-    # --- Step 6: Compute RFM ---
+    # --- Step 5-7: Compute RFM, lifecycle, CBNC ---
     t0 = time.time()
     rfm_df = compute_rfm(accounts_df, opps_df)
-    timings["rfm_compute"] = round(time.time() - t0, 1)
-    logger.info(f"RFM computed ({timings['rfm_compute']}s)")
+    timings["rfm"] = round(time.time() - t0, 1)
 
-    # --- Step 7: Compute Lifecycle ---
     t0 = time.time()
     lifecycle = compute_lifecycle(accounts_df)
     timings["lifecycle"] = round(time.time() - t0, 1)
 
-    # --- Step 8: Detect CBNC ---
     t0 = time.time()
     cbnc_ids = detect_cbnc(cbnc_opps_df)
     timings["cbnc"] = round(time.time() - t0, 1)
 
-    # --- Step 9: Run Waterfall ---
+    # --- Step 8: Waterfall assignment ---
     logger.info("=" * 60)
     logger.info("PHASE 2: WATERFALL ASSIGNMENT")
     logger.info("=" * 60)
@@ -94,18 +133,14 @@ def run_diagnostic() -> dict:
     waterfall_result = run_waterfall(accounts_df, rfm_df, lifecycle, cbnc_ids)
     timings["waterfall"] = round(time.time() - t0, 1)
 
-    # Build segment summary for Draft tab
-    segment_summary = build_segment_summary(waterfall_result)
-    suppression_summary = build_suppression_summary(waterfall_result)
+    # --- Step 9: Connect to Sheets, read MIC ---
+    logger.info("=" * 60)
+    logger.info("PHASE 3: SUPPRESSION + BUDGET FITTING")
+    logger.info("=" * 60)
 
-    # --- Step 10: Connect to Sheets ---
-    logger.info("-" * 40)
-    logger.info("Connecting to Google Sheets...")
     gc = get_sheets_client()
 
-    # Read MIC Campaign Calendar (connectivity check)
     logger.info("Reading MIC Campaign Calendar...")
-    t0 = time.time()
     try:
         mic_df = read_campaign_calendar(gc)
         mic_status = f"OK — {len(mic_df)} rows"
@@ -113,9 +148,63 @@ def run_diagnostic() -> dict:
         mic_status = f"FAILED: {e}"
         logger.error(f"MIC read failed: {e}")
         mic_df = pd.DataFrame()
-    timings["mic_read"] = round(time.time() - t0, 1)
 
-    # Write segment summary to Draft tab
+    # Pick a real campaign for budget fitting
+    campaign = _pick_campaign_from_mic(mic_df)
+    if campaign:
+        logger.info(f"  Using campaign: {campaign['campaign_name']} "
+                    f"(target: {campaign['budget_qty_mailed']:,}, CPP: ${campaign['cpp']:.2f})")
+        campaign_type = campaign["campaign_type"]
+        target_qty = campaign["budget_qty_mailed"]
+        cpp = campaign["cpp"]
+    else:
+        logger.info("  No DM campaign found in MIC — using defaults for demo")
+        campaign_type = "Appeal"
+        target_qty = 35000
+        cpp = 0.48
+
+    # --- Step 10: Tier 2 suppression ---
+    t0 = time.time()
+    waterfall_result, tier2_log = apply_tier2_suppression(
+        waterfall_result, accounts_df, campaign_type=campaign_type
+    )
+    timings["tier2"] = round(time.time() - t0, 1)
+
+    # --- Step 11: Build segment summary (post-Tier 2) ---
+    segment_summary = build_segment_summary(waterfall_result)
+    suppression_summary_df = build_suppression_summary(waterfall_result)
+
+    # --- Step 12: Segment-level suppression (economic gates) ---
+    # Note: without historical performance data, economic columns are blank.
+    # Break-even and response rate floor won't fire until Phase 7/8 when
+    # Campaign_Segment__c actuals are available. The logic is in place.
+    t0 = time.time()
+    segment_summary = apply_segment_level_suppression(segment_summary, cpp)
+    timings["seg_suppression"] = round(time.time() - t0, 1)
+
+    # --- Step 13: Budget-target fitting ---
+    t0 = time.time()
+    waterfall_result, segment_summary, fit_info = fit_to_budget(
+        waterfall_result, target_qty, segment_summary
+    )
+    timings["budget_fit"] = round(time.time() - t0, 1)
+
+    # --- Step 14: Suppression audit log ---
+    audit_log = build_suppression_audit_log(waterfall_result, tier2_log)
+
+    # Upload audit log CSV to Drive
+    logger.info("Uploading suppression audit log to Drive...")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    audit_csv = audit_log.to_csv(index=False)
+    try:
+        audit_url = upload_csv_to_drive(
+            gc, f"suppression_audit_{timestamp}.csv", audit_csv
+        )
+    except Exception as e:
+        audit_url = f"FAILED: {e}"
+        logger.error(f"Audit log upload failed: {e}")
+
+    # --- Step 15: Write Draft tab ---
     logger.info("Writing segment summary to Draft tab...")
     try:
         write_draft_tab(gc, segment_summary)
@@ -124,7 +213,7 @@ def run_diagnostic() -> dict:
         draft_status = f"FAILED: {e}"
         logger.error(f"Draft tab write failed: {e}")
 
-    # --- Step 11: Build diagnostic outputs ---
+    # --- Step 16: Build diagnostic outputs ---
     logger.info("-" * 40)
     logger.info("Building diagnostic outputs...")
 
@@ -137,45 +226,78 @@ def run_diagnostic() -> dict:
     cornerstone = build_cornerstone_diagnostic(accounts_df, rfm_df)
     gate_results = evaluate_gate_criteria(accounts_df, rfm_df, sustainer_field_exists)
 
-    # Cornerstone R-bucket gap diagnostic (noted in Phase 1 review)
+    # Cornerstone R-bucket gap note
     cs_ids = accounts_df.set_index("Id").index[
         accounts_df.set_index("Id").get("Cornerstone_Partner__c", pd.Series(False)) == True
     ]
     cs_rfm = rfm_df.loc[rfm_df.index.isin(cs_ids)]
     cs_r_dist = cs_rfm["R_bucket"].value_counts().sort_index()
-    cs_note = "NOTE: Cornerstone R2/R5 gap is a flag-population issue upstream, not a segmentation issue."
     cornerstone_detail = pd.DataFrame({
         "R_Bucket": cs_r_dist.index,
         "Count": cs_r_dist.values,
     })
-    cornerstone_detail.loc[len(cornerstone_detail)] = {"R_Bucket": "---", "Count": cs_note}
+    cornerstone_detail.loc[len(cornerstone_detail)] = {
+        "R_Bucket": "---",
+        "Count": "NOTE: CS R2/R5 gap is upstream flag-population issue",
+    }
+
+    # Suppression totals for gate check
+    pre_suppression = len(waterfall_result[waterfall_result["segment_code"] != ""])
+    # Tier 1 suppressed = already excluded from waterfall assignments
+    tier1_suppressed = (waterfall_result["suppression_reason"].str.startswith("Tier1")).sum()
+    tier2_suppressed = (waterfall_result["suppression_reason"].str.startswith("Tier2")).sum()
+    total_assigned_post_suppression = (
+        (waterfall_result["segment_code"] != "")
+        & (waterfall_result["suppression_reason"] == "")
+    ).sum()
+    # "Pre-suppression universe" = assigned before Tier 2
+    pre_tier2 = total_assigned_post_suppression + tier2_suppressed
+    tier2_pct = (tier2_suppressed / pre_tier2 * 100) if pre_tier2 > 0 else 0
+
+    outside_window = int(rfm_df["_outside_window"].sum()) if "_outside_window" in rfm_df.columns else 0
 
     # Metadata
-    outside_window = int(rfm_df["_outside_window"].sum()) if "_outside_window" in rfm_df.columns else 0
     metadata = pd.DataFrame([
         {"Metric": "Run Timestamp", "Value": pd.Timestamp.now().isoformat()},
         {"Metric": "Total Accounts (Pass 1)", "Value": len(accounts_df)},
         {"Metric": "Total Opportunities 5yr (Pass 2)", "Value": len(opps_df)},
         {"Metric": "Total Opportunities 10yr (Pass 3)", "Value": len(cbnc_opps_df)},
-        {"Metric": "Accounts Outside 5yr Window", "Value": outside_window},
         {"Metric": "CBNC Donors Detected", "Value": len(cbnc_ids)},
-        {"Metric": "MIC Campaign Calendar", "Value": mic_status},
-        {"Metric": "MIC Draft Tab", "Value": draft_status},
-        {"Metric": "SF Connect Time (s)", "Value": timings.get("sf_connect", "")},
-        {"Metric": "Pass 1 Time (s)", "Value": timings.get("pass1_accounts", "")},
-        {"Metric": "Pass 2 Time (s)", "Value": timings.get("pass2_opps", "")},
-        {"Metric": "Pass 3 CBNC Time (s)", "Value": timings.get("pass3_cbnc", "")},
-        {"Metric": "RFM Compute Time (s)", "Value": timings.get("rfm_compute", "")},
-        {"Metric": "Lifecycle Time (s)", "Value": timings.get("lifecycle", "")},
-        {"Metric": "CBNC Detect Time (s)", "Value": timings.get("cbnc", "")},
-        {"Metric": "Waterfall Time (s)", "Value": timings.get("waterfall", "")},
+        {"Metric": "Tier 1 Suppressed", "Value": tier1_suppressed},
+        {"Metric": "Tier 2 Suppressed", "Value": tier2_suppressed},
+        {"Metric": f"Tier 2 % of Pre-Suppression", "Value": f"{tier2_pct:.1f}%"},
+        {"Metric": "Total Assigned (post-suppression)", "Value": total_assigned_post_suppression},
+        {"Metric": "Budget Target", "Value": target_qty},
+        {"Metric": f"Budget Fit Pass", "Value": fit_info["pass"]},
+        {"Metric": "Fitted Quantity", "Value": fit_info["fitted"]},
+        {"Metric": "Trimmed", "Value": fit_info["trimmed"]},
+        {"Metric": "Gap", "Value": fit_info.get("gap", 0)},
+        {"Metric": "Campaign", "Value": campaign["campaign_name"] if campaign else "Default"},
+        {"Metric": "CPP", "Value": f"${cpp:.2f}"},
+        {"Metric": "Audit Log", "Value": audit_url},
+        {"Metric": "MIC Status", "Value": mic_status},
+        {"Metric": "Draft Tab", "Value": draft_status},
     ])
 
-    # --- Step 12: Write diagnostic ---
+    # Budget fit detail
+    fit_detail = pd.DataFrame([
+        {"Metric": "Full Universe", "Value": fit_info["full_universe"]},
+        {"Metric": "Target", "Value": fit_info["target"]},
+        {"Metric": "Pass Used", "Value": fit_info["pass"]},
+        {"Metric": "Fitted Total", "Value": fit_info["fitted"]},
+        {"Metric": "Total Trimmed", "Value": fit_info["trimmed"]},
+        {"Metric": "Gap", "Value": fit_info.get("gap", 0)},
+    ])
+    if "trimmed_by_segment" in fit_info:
+        for seg, count in fit_info["trimmed_by_segment"].items():
+            fit_detail.loc[len(fit_detail)] = {"Metric": f"Trimmed: {seg}", "Value": count}
+
+    # --- Step 17: Write diagnostic ---
     logger.info("Writing diagnostic output...")
     tabs = {
         "Segment_Summary": segment_summary,
-        "Suppression_Summary": suppression_summary,
+        "Budget_Fit": fit_detail,
+        "Suppression_Summary": suppression_summary_df,
         "RFM_RxF": rfm_rf,
         "RFM_RxM": rfm_rm,
         "RFM_Summary": rfm_summary,
@@ -190,42 +312,54 @@ def run_diagnostic() -> dict:
     }
     sheet_url = write_diagnostic(gc, tabs)
 
-    # --- Step 13: Print results ---
+    # --- Step 18: Print results ---
     logger.info("=" * 60)
-    logger.info("GATE CRITERIA RESULTS")
+    logger.info("RESULTS")
     logger.info("=" * 60)
+
     for _, row in gate_results.iterrows():
         status_icon = "PASS" if row["Status"] == "PASS" else "** " + row["Status"] + " **"
         logger.info(f"  [{status_icon}] {row['Gate']}: {row['Detail']}")
 
-    logger.info("=" * 60)
-    logger.info("SEGMENT SUMMARY")
-    logger.info("=" * 60)
+    logger.info("")
+    logger.info("SEGMENT SUMMARY (post-suppression, post-fit):")
     total_mailable = 0
     for _, row in segment_summary.iterrows():
-        logger.info(f"  {row['Segment Code']:6s} {row['Segment Name']:45s} {int(row['Quantity']):>8,}")
-        total_mailable += int(row["Quantity"])
+        qty = int(row.get("Budget Fit", row["Quantity"])) if "Budget Fit" in row else int(row["Quantity"])
+        status = row.get("Status", "")
+        logger.info(f"  {row['Segment Code']:6s} {row['Segment Name']:45s} {qty:>8,}  {status}")
+        if status not in ("Below Budget Line",):
+            total_mailable += qty
     logger.info(f"  {'':6s} {'TOTAL MAILABLE':45s} {total_mailable:>8,}")
 
-    logger.info(f"\nSuppression summary:")
-    for _, row in suppression_summary.iterrows():
+    logger.info(f"\nSuppression:")
+    for _, row in suppression_summary_df.iterrows():
         logger.info(f"  {row['Suppression Rule']:40s} {int(row['Count']):>8,}")
 
-    logger.info(f"\nDiagnostic output: {sheet_url}")
+    logger.info(f"\nBudget fit: {fit_info['pass']} — "
+                f"universe {fit_info['full_universe']:,} → fitted {fit_info['fitted']:,} "
+                f"(target {target_qty:,}, trimmed {fit_info['trimmed']:,})")
+
+    logger.info(f"Tier 2 suppression: {tier2_suppressed:,} ({tier2_pct:.1f}% of pre-suppression universe)")
+    logger.info(f"Audit log: {audit_url}")
+    logger.info(f"Diagnostic: {sheet_url}")
 
     return {
         "gate_results": gate_results.to_dict(orient="records"),
         "segment_summary": segment_summary.to_dict(orient="records"),
-        "suppression_summary": suppression_summary.to_dict(orient="records"),
+        "suppression_summary": suppression_summary_df.to_dict(orient="records"),
+        "fit_info": fit_info,
         "sheet_url": sheet_url,
+        "audit_url": audit_url,
         "timings": timings,
         "counts": {
             "accounts": len(accounts_df),
-            "opportunities_5yr": len(opps_df),
-            "opportunities_10yr": len(cbnc_opps_df),
-            "cbnc_donors": len(cbnc_ids),
-            "outside_window": outside_window,
+            "tier1_suppressed": int(tier1_suppressed),
+            "tier2_suppressed": int(tier2_suppressed),
+            "tier2_pct": round(tier2_pct, 1),
             "total_mailable": total_mailable,
+            "fitted": fit_info["fitted"],
+            "trimmed": fit_info["trimmed"],
         },
     }
 
