@@ -39,7 +39,7 @@ MATCHBACK_COLUMNS = [
     "CurrentFYGiving", "PriorFYGiving",
     "CumulativeGiving", "LifecycleStage", "CAVersion",
     "CornerstoneFlag", "Email", "SustainerFlag",
-    "GiftCount12Mo", "RFMScore", "ExclusionReason",
+    "GiftCount12Mo", "RFMScore", "Holdout", "ExclusionReason",
 ]
 
 
@@ -187,7 +187,7 @@ def generate_output_files(
 
     warnings = []
 
-    def _build_record(code_row, include_internal=False, exclusion_reason=""):
+    def _build_record(code_row, include_internal=False, exclusion_reason="", holdout=False):
         """Build a single output record from a codes_df row."""
         acct_id = code_row["account_id"]
         donor_id = code_row.get("donor_id_9", "")
@@ -275,6 +275,7 @@ def generate_output_files(
                 "SustainerFlag": _get_acct_field(accts, acct_id, "Miracle_Partner__c"),
                 "GiftCount12Mo": _get_acct_field(accts, acct_id, "Gifts_in_L12M__c"),
                 "RFMScore": rfm_code,
+                "Holdout": holdout,
                 "ExclusionReason": exclusion_reason,
             })
 
@@ -289,13 +290,18 @@ def generate_output_files(
 
     # --- Build Matchback File (ALL records: clean + excluded, with exclusion_reason) ---
     matchback_rows = []
-    # Clean records
+    # Clean records (with holdout flag)
     for _, code_row in clean_codes.iterrows():
-        matchback_rows.append(_build_record(code_row, include_internal=True, exclusion_reason=""))
-    # Excluded records (with reason)
+        is_holdout = code_row["account_id"] in holdout_ids
+        matchback_rows.append(_build_record(
+            code_row, include_internal=True, exclusion_reason="", holdout=is_holdout
+        ))
+    # Excluded records (with reason, not holdout)
     for _, code_row in excluded_codes.iterrows():
         reason = code_row.get("exclusion_reason", "unknown")
-        matchback_rows.append(_build_record(code_row, include_internal=True, exclusion_reason=reason))
+        matchback_rows.append(_build_record(
+            code_row, include_internal=True, exclusion_reason=reason, holdout=False
+        ))
 
     printer_df = pd.DataFrame(printer_rows, columns=PRINTER_COLUMNS)
     matchback_df = pd.DataFrame(matchback_rows, columns=MATCHBACK_COLUMNS)
