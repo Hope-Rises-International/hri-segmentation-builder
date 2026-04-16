@@ -161,6 +161,7 @@ class PipelineWriteRecovery:
         campaign_code: str,
         campaign_appeal_code: str,
         lane: str = "Housefile",
+        exceptions_csv: str = "",
     ) -> dict:
         """Execute pipeline writes in order: Drive → Sheets → SF.
 
@@ -191,6 +192,13 @@ class PipelineWriteRecovery:
                 "matchback": matchback_url,
                 "audit": audit_url,
             }
+
+            # Upload exceptions CSV if there are excluded records
+            if exceptions_csv:
+                exceptions_url = upload_csv_to_drive(
+                    gc, f"exceptions_{campaign_code}_{date_str}.csv", exceptions_csv
+                )
+                drive_urls["exceptions"] = exceptions_url
             self.status["drive_write"] = "success"
             logger.info(f"  Drive: 3 files uploaded")
         except Exception as e:

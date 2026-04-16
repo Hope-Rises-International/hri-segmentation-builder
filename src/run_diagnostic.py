@@ -290,6 +290,7 @@ def run_diagnostic() -> dict:
         campaign_code=campaign.get("appeal_code", "DIAG") if campaign else "DIAG",
         campaign_appeal_code=campaign_appeal_code,
         lane=campaign.get("lane", "Housefile") if campaign else "Housefile",
+        exceptions_csv=output.get("exceptions_csv", ""),
     )
 
     drive_urls = write_status.get("drive_urls", {})
@@ -376,9 +377,13 @@ def run_diagnostic() -> dict:
         {"Metric": "Matchback File Rows", "Value": output["matchback_count"]},
         {"Metric": "Housefile Suppression Rows", "Value": output["suppression_count"]},
         {"Metric": "Holdout Count", "Value": output["holdout_count"]},
+        {"Metric": "Excluded (DQ)", "Value": output.get("excluded_count", 0)},
+        {"Metric": "Excluded Missing ID", "Value": output.get("excluded_missing", 0)},
+        {"Metric": "Excluded Duplicate ID", "Value": output.get("excluded_duplicate", 0)},
         {"Metric": "ZIP Preservation", "Value": "PASS" if zip_ok else "FAIL"},
         {"Metric": "Printer File URL", "Value": printer_url},
         {"Metric": "Matchback File URL", "Value": matchback_url},
+        {"Metric": "Exceptions File URL", "Value": drive_urls.get("exceptions", "N/A")},
         {"Metric": "Pipeline Drive Write", "Value": write_status.get("drive_write", "N/A")},
         {"Metric": "Pipeline Sheets Write", "Value": write_status.get("sheets_write", "N/A")},
         {"Metric": "Pipeline SF Write", "Value": write_status.get("salesforce_write", "N/A")},
@@ -461,6 +466,12 @@ def run_diagnostic() -> dict:
     logger.info(f"  Matchback File: {output['matchback_count']:,} rows")
     logger.info(f"  Housefile Suppression: {output['suppression_count']:,} rows")
     logger.info(f"  Holdout: {output['holdout_count']:,} donors excluded")
+    excluded_count = output.get("excluded_count", 0)
+    if excluded_count > 0:
+        logger.info(f"  DQ Exclusions: {excluded_count:,} records "
+                    f"({output.get('excluded_missing', 0):,} missing ID, "
+                    f"{output.get('excluded_duplicate', 0):,} duplicate ID)")
+        logger.info(f"  Exceptions file: {drive_urls.get('exceptions', 'N/A')}")
     logger.info(f"  ZIP preservation: {'PASS' if zip_ok else 'FAIL'}")
     logger.info(f"  15-char in Printer File: {'FAIL' if printer_has_15char else 'PASS (absent)'}")
     logger.info(f"  15-char in Matchback File: {'PASS' if matchback_has_15char else 'FAIL (missing)'}")
