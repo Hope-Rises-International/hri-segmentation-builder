@@ -1,4 +1,4 @@
-"""Pipeline orchestrator: Phase 1 diagnostic + Phase 2 waterfall + Phase 3 suppression/fitting."""
+"""Pipeline orchestrator: Phases 1-4 (SF pull → RFM → waterfall → suppression → fitting → ask strings → appeal codes)."""
 
 import logging
 import sys
@@ -21,6 +21,8 @@ from suppression_engine import (
     build_suppression_audit_log,
 )
 from budget_fitting import fit_to_budget
+from ask_strings import compute_ask_strings, classify_reply_copy_tier
+from appeal_codes import generate_appeal_codes, validate_appeal_codes
 from diagnostic import (
     build_rfm_crosstab_rf,
     build_rfm_crosstab_rm,
@@ -189,7 +191,50 @@ def run_diagnostic() -> dict:
     )
     timings["budget_fit"] = round(time.time() - t0, 1)
 
-    # --- Step 14: Suppression audit log ---
+    # --- Step 14: Phase 4 — Ask Strings + Appeal Codes ---
+    logger.info("=" * 60)
+    logger.info("PHASE 4: ASK STRINGS + APPEAL CODES")
+    logger.info("=" * 60)
+
+    t0 = time.time()
+    ask_df = compute_ask_strings(waterfall_result, accounts_df)
+    reply_tiers = classify_reply_copy_tier(waterfall_result, accounts_df)
+    timings["ask_strings"] = round(time.time() - t0, 1)
+
+    # Appeal codes
+    campaign_appeal_code = campaign.get("appeal_code", "") if campaign else ""
+    if not campaign_appeal_code or len(campaign_appeal_code) < 5:
+        campaign_appeal_code = "R2631TYRE"  # Fallback demo code
+        logger.info(f"  No valid appeal code in MIC — using demo: {campaign_appeal_code}")
+
+    t0 = time.time()
+    codes_df = generate_appeal_codes(
+        waterfall_result, accounts_df,
+        campaign_appeal_code=campaign_appeal_code,
+    )
+    timings["appeal_codes"] = round(time.time() - t0, 1)
+
+    # Validate
+    code_validation = validate_appeal_codes(codes_df)
+
+    # Ask rounding validation: below $100 must be multiple of $5, at/above $100 must be multiple of $25
+    rounding_ok = True
+    if len(ask_df) > 0:
+        for col in ["ask1", "ask2", "ask3"]:
+            vals = ask_df[col].dropna()
+            low = vals[vals < 100]
+            high = vals[vals >= 100]
+            bad_low = low[(low % 5 != 0) & (low > 0)]
+            bad_high = high[(high % 25 != 0) & (high > 0)]
+            if len(bad_low) > 0 or len(bad_high) > 0:
+                rounding_ok = False
+                if len(bad_low) > 0:
+                    logger.warning(f"  {col}: {len(bad_low)} values <$100 not rounded to $5")
+                if len(bad_high) > 0:
+                    logger.warning(f"  {col}: {len(bad_high)} values >=$100 not rounded to $25")
+        logger.info(f"  Ask rounding validation: {'PASS' if rounding_ok else 'FAIL'}")
+
+    # --- Step 15: Suppression audit log ---
     audit_log = build_suppression_audit_log(waterfall_result, tier2_log)
 
     # Upload audit log CSV to Drive
@@ -277,6 +322,9 @@ def run_diagnostic() -> dict:
         {"Metric": "Audit Log", "Value": audit_url},
         {"Metric": "MIC Status", "Value": mic_status},
         {"Metric": "Draft Tab", "Value": draft_status},
+        {"Metric": "Ask Strings Computed", "Value": len(ask_df)},
+        {"Metric": "Appeal Codes Generated", "Value": len(codes_df)},
+        {"Metric": "Ask Rounding Valid", "Value": "PASS" if rounding_ok else "FAIL"},
     ])
 
     # Budget fit detail
@@ -307,6 +355,8 @@ def run_diagnostic() -> dict:
         "Staff_Manager": staff_mgr,
         "Cornerstone": cornerstone,
         "Cornerstone_RFM": cornerstone_detail,
+        "Appeal_Validation": code_validation,
+        "SpotCheck": codes_df.sample(min(50, len(codes_df)), random_state=42) if len(codes_df) > 0 else pd.DataFrame(),
         "Gate_Results": gate_results,
         "Metadata": metadata,
     }
@@ -341,7 +391,15 @@ def run_diagnostic() -> dict:
                 f"(target {target_qty:,}, trimmed {fit_info['trimmed']:,})")
 
     logger.info(f"Tier 2 suppression: {tier2_suppressed:,} ({tier2_pct:.1f}% of pre-suppression universe)")
-    logger.info(f"Audit log: {audit_url}")
+
+    logger.info(f"\nPhase 4:")
+    logger.info(f"  Ask strings: {len(ask_df):,} computed")
+    logger.info(f"  Appeal codes: {len(codes_df):,} generated")
+    logger.info(f"  Ask rounding: {'PASS' if rounding_ok else 'FAIL'}")
+    for _, row in code_validation.iterrows():
+        logger.info(f"  [{row['Status']}] {row['Check']}: {row['Detail']}")
+
+    logger.info(f"\nAudit log: {audit_url}")
     logger.info(f"Diagnostic: {sheet_url}")
 
     return {
