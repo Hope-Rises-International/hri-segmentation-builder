@@ -1,0 +1,19 @@
+# Environment and secrets
+.env
+.env.*
+credentials.json
+token.json
+
+# Node (if using clasp locally)
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
