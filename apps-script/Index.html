@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --hri-teal: #1B4D5C;
+      --hri-gold: #C4963E;
+      --hri-cream: #FDFCFA;
+      --hri-rust: #C87941;
+      --hri-sage: #7A9A7E;
+      --hri-light: #F4F1EC;
+      --hri-border: #E2DDD6;
+      --hri-text: #2C2C2C;
+      --hri-muted: #6B6B6B;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--hri-cream);
+      color: var(--hri-text);
+      line-height: 1.5;
+    }
+
+    /* Header */
+    .header {
+      background: var(--hri-teal);
+      color: white;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header .subtitle { font-size: 13px; opacity: 0.8; }
+
+    /* Layout */
+    .main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+    /* Cards */
+    .card {
+      background: white;
+      border: 1px solid var(--hri-border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .card h2 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--hri-teal);
+    }
+    .card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 12px 0 8px;
+      color: var(--hri-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Campaign Selector */
+    select, input[type="number"], input[type="text"] {
+      font-family: inherit;
+      font-size: 14px;
+      padding: 8px 12px;
+      border: 1px solid var(--hri-border);
+      border-radius: 6px;
+      background: white;
+      width: 100%;
+      max-width: 500px;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--hri-teal); }
+
+    /* Campaign Info */
+    .campaign-info {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .info-item { font-size: 13px; }
+    .info-label { color: var(--hri-muted); font-size: 11px; text-transform: uppercase; }
+    .info-value { font-weight: 600; font-size: 16px; }
+
+    /* Toggle Grid */
+    .toggle-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .toggle-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--hri-light);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .toggle-item input[type="checkbox"] {
+      width: 18px; height: 18px; cursor: pointer;
+    }
+    .toggle-item label { cursor: pointer; flex: 1; }
+    .toggle-item .toggle-default {
+      font-size: 10px;
+      color: var(--hri-muted);
+      padding: 1px 6px;
+      background: white;
+      border-radius: 3px;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-block;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--hri-teal); color: white; }
+    .btn-primary:hover:not(:disabled) { background: #164250; }
+    .btn-gold { background: var(--hri-gold); color: white; }
+    .btn-gold:hover:not(:disabled) { background: #B08535; }
+    .btn-sage { background: var(--hri-sage); color: white; }
+    .btn-sage:hover:not(:disabled) { background: #6B8B6F; }
+    .btn-rust { background: var(--hri-rust); color: white; }
+    .btn-rust:hover:not(:disabled) { background: #B56B38; }
+    .btn-outline {
+      background: white;
+      color: var(--hri-teal);
+      border: 1px solid var(--hri-teal);
+    }
+    .btn-outline:hover:not(:disabled) { background: var(--hri-light); }
+
+    .action-bar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    /* Status Badge */
+    .status-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 12px;
+      text-transform: uppercase;
+    }
+    .status-Draft { background: #E8E8E8; color: #555; }
+    .status-Projected { background: #FFF3CD; color: #856404; }
+    .status-Approved { background: #D4EDDA; color: #155724; }
+    .status-Pulled { background: #CCE5FF; color: #004085; }
+    .status-Mailed { background: #D1ECF1; color: #0C5460; }
+
+    /* Message */
+    .msg { padding: 12px 16px; border-radius: 6px; margin: 12px 0; font-size: 13px; }
+    .msg-info { background: #E3F2FD; border-left: 3px solid #2196F3; }
+    .msg-success { background: #E8F5E9; border-left: 3px solid #4CAF50; }
+    .msg-warn { background: #FFF3E0; border-left: 3px solid #FF9800; }
+    .msg-error { background: #FFEBEE; border-left: 3px solid #F44336; }
+
+    /* Segment Table */
+    .seg-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .seg-table th {
+      text-align: left;
+      padding: 8px 10px;
+      background: var(--hri-light);
+      border-bottom: 2px solid var(--hri-border);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      color: var(--hri-muted);
+    }
+    .seg-table td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--hri-border);
+    }
+    .seg-table tr:hover { background: #FAFAF8; }
+    .seg-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .seg-table .status-include { color: var(--hri-sage); }
+    .seg-table .status-trim { color: var(--hri-rust); }
+    .seg-table .status-below { color: #999; text-decoration: line-through; }
+
+    /* Files List */
+    .file-list { list-style: none; }
+    .file-list li {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--hri-border);
+      font-size: 13px;
+    }
+    .file-list a { color: var(--hri-teal); text-decoration: none; font-weight: 500; }
+    .file-list a:hover { text-decoration: underline; }
+    .file-meta { color: var(--hri-muted); font-size: 11px; }
+
+    /* Actuals Form */
+    .actuals-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 400px; }
+    .actuals-form label { font-size: 12px; color: var(--hri-muted); display: block; margin-bottom: 4px; }
+
+    /* Loading */
+    .loading { color: var(--hri-muted); font-style: italic; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #ddd;
+      border-top-color: var(--hri-teal); border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Hidden */
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Segmentation Builder</h1>
+    <div class="subtitle">Hope Rises International — Direct Mail Segmentation Engine</div>
+  </div>
+  <div id="active-status"></div>
+</div>
+
+<div class="main">
+
+  <!-- Step 1: Campaign Selection -->
+  <div class="card" id="step-select">
+    <h2>Step 1: Select Campaign</h2>
+    <select id="campaign-select" onchange="onCampaignSelect()">
+      <option value="">Loading campaigns...</option>
+    </select>
+    <div id="campaign-info" class="campaign-info hidden"></div>
+    <div id="campaign-msg"></div>
+  </div>
+
+  <!-- Step 2: Segment Group Toggles -->
+  <div class="card hidden" id="step-toggles">
+    <h2>Step 2: Configure Segment Groups</h2>
+    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
+      Toggle waterfall positions ON/OFF for this campaign. Changes affect who gets mailed.
+    </p>
+    <h3>Waterfall Positions</h3>
+    <div class="toggle-grid" id="waterfall-toggles"></div>
+    <h3>Suppression Rules</h3>
+    <div class="toggle-grid" id="suppression-toggles"></div>
+  </div>
+
+  <!-- Step 3: Run Projection -->
+  <div class="card hidden" id="step-project">
+    <h2>Step 3: Run Projection</h2>
+    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
+      Runs the full waterfall, suppression, and budget-target fitting. Results appear in the
+      <strong>Draft tab</strong> of the MIC for review.
+    </p>
+    <div class="action-bar">
+      <button class="btn btn-primary" id="btn-project" onclick="runProjection()">
+        Run Projection
+      </button>
+      <button class="btn btn-outline" onclick="refreshDraft()">
+        Refresh Draft Tab
+      </button>
+    </div>
+    <div id="projection-msg"></div>
+    <div id="draft-preview" class="hidden" style="margin-top:16px"></div>
+  </div>
+
+  <!-- Step 4: Approve + Generate -->
+  <div class="card hidden" id="step-approve">
+    <h2>Step 4: Approve Mailing Plan</h2>
+    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
+      Review the Draft tab in the MIC. When satisfied, approve to lock the plan
+      and copy segment data to the Segment Detail tab.
+    </p>
+    <div class="action-bar">
+      <button class="btn btn-gold" id="btn-approve" onclick="approvePlan()">
+        Approve Plan
+      </button>
+      <button class="btn btn-outline" id="btn-unlock" onclick="unlockCampaign()" style="display:none">
+        Unlock (back to Projected)
+      </button>
+    </div>
+    <div id="approve-msg"></div>
+  </div>
+
+  <!-- Step 5: Output Files -->
+  <div class="card hidden" id="step-files">
+    <h2>Step 5: Output Files</h2>
+    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
+      Download the Printer File (for VeraData) and Internal Matchback File.
+    </p>
+    <div id="files-loading" class="loading">Loading files...</div>
+    <ul class="file-list hidden" id="file-list"></ul>
+    <div class="action-bar">
+      <button class="btn btn-sage" onclick="loadToSalesforce()">
+        Load to Salesforce
+      </button>
+    </div>
+    <div id="sf-msg"></div>
+  </div>
+
+  <!-- Step 6: Post-Mailing Actuals -->
+  <div class="card hidden" id="step-actuals">
+    <h2>Step 6: Post-Mailing Actuals</h2>
+    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
+      After mailing, enter actual cost and quantities from the agency invoice.
+    </p>
+    <div class="actuals-form">
+      <div>
+        <label>Actual Qty Mailed</label>
+        <input type="number" id="actual-qty" placeholder="e.g. 48500">
+      </div>
+      <div>
+        <label>Actual Cost ($)</label>
+        <input type="number" id="actual-cost" step="0.01" placeholder="e.g. 23280.00">
+      </div>
+    </div>
+    <div class="action-bar" style="margin-top:12px">
+      <button class="btn btn-rust" onclick="submitActuals()">Save Actuals</button>
+    </div>
+    <div id="actuals-msg"></div>
+  </div>
+
+</div>
+
+<script>
+  // --- State ---
+  var selectedCampaign = null;
+  var campaigns = [];
+
+  // --- Waterfall toggle definitions ---
+  var WATERFALL_TOGGLES = [
+    { key: 'major_gift', label: 'Major Gift Portfolio', defaultOn: true },
+    { key: 'mid_level', label: 'Mid-Level', defaultOn: true },
+    { key: 'sustainer', label: 'Sustainers (Miracle Partners)', defaultOn: false },
+    { key: 'cornerstone', label: 'Cornerstone Partners', defaultOn: true },
+    { key: 'new_donor', label: 'New Donor (Welcome Window)', defaultOn: false },
+    { key: 'active_housefile', label: 'Active Housefile', defaultOn: true },
+    { key: 'mid_level_prospect', label: 'Mid-Level Prospect', defaultOn: true },
+    { key: 'lapsed', label: 'Lapsed Recent', defaultOn: true },
+    { key: 'deep_lapsed', label: 'Deep Lapsed', defaultOn: true },
+  ];
+
+  var SUPPRESSION_TOGGLES = [
+    { key: 'newsletter_only', label: 'Newsletter/Prospectus Only', defaultOn: true },
+    { key: 'match_only', label: 'Match Only', defaultOn: true },
+    { key: 'no_name_sharing', label: 'No Name Sharing', defaultOn: true },
+    { key: 'xmas_catalog_cap', label: '1 Mailing Xmas Catalog', defaultOn: true },
+    { key: 'xmas_easter_cap', label: '2 Mailings Xmas/Easter', defaultOn: true },
+    { key: 'recent_gift_window', label: 'Recent Gift Window (45 days)', defaultOn: false },
+    { key: 'break_even_floor', label: 'Break-Even Floor', defaultOn: true },
+    { key: 'response_rate_floor', label: 'Response Rate Floor (0.8%)', defaultOn: true },
+    { key: 'frequency_cap', label: 'Frequency Cap (6/year)', defaultOn: false },
+    { key: 'holdout', label: 'Holdout (5%)', defaultOn: true },
+  ];
+
+  // --- Init ---
+  window.addEventListener('load', function() {
+    loadCampaigns();
+    renderToggles();
+  });
+
+  function loadCampaigns() {
+    if (typeof google !== 'undefined' && google.script && google.script.run) {
+      google.script.run
+        .withSuccessHandler(onCampaignsLoaded)
+        .withFailureHandler(function(e) { showMsg('campaign-msg', 'error', 'Failed to load campaigns: ' + e); })
+        .getCampaigns();
+    } else {
+      // Dev mode: show placeholder
+      document.getElementById('campaign-select').innerHTML =
+        '<option value="">Apps Script runtime not available (dev mode)</option>';
+    }
+  }
+
+  function onCampaignsLoaded(result) {
+    if (result.error) {
+      showMsg('campaign-msg', 'error', result.error);
+      return;
+    }
+    campaigns = result.campaigns || [];
+    var sel = document.getElementById('campaign-select');
+    sel.innerHTML = '<option value="">Select a campaign...</option>';
+    campaigns.forEach(function(c, i) {
+      var opt = document.createElement('option');
+      opt.value = i;
+      opt.text = c.fiscal_year + ' ' + c.campaign_name +
+        ' (' + c.appeal_code + ') — ' + fmt(c.budget_qty_mailed) + ' target';
+      if (c.status && c.status !== 'Draft') {
+        opt.text += ' [' + c.status + ']';
+      }
+      sel.appendChild(opt);
+    });
+  }
+
+  function onCampaignSelect() {
+    var sel = document.getElementById('campaign-select');
+    var idx = sel.value;
+    if (idx === '') {
+      selectedCampaign = null;
+      hide('campaign-info');
+      hide('step-toggles');
+      hide('step-project');
+      hide('step-approve');
+      hide('step-files');
+      hide('step-actuals');
+      return;
+    }
+
+    selectedCampaign = campaigns[parseInt(idx)];
+    var c = selectedCampaign;
+
+    // Show campaign info
+    var info = document.getElementById('campaign-info');
+    info.innerHTML =
+      infoItem('Campaign', c.campaign_name) +
+      infoItem('Appeal Code', c.appeal_code) +
+      infoItem('Target Qty', fmt(c.budget_qty_mailed)) +
+      infoItem('Budget', '$' + fmt(c.budget_cost)) +
+      infoItem('CPP', '$' + c.cpp.toFixed(2)) +
+      infoItem('Mail Date', c.mail_date) +
+      infoItem('Lane', c.lane) +
+      infoItem('Status', '<span class="status-badge status-' + (c.status || 'Draft') + '">' + (c.status || 'Draft') + '</span>');
+    show('campaign-info');
+
+    // Show appropriate steps based on status
+    show('step-toggles');
+    show('step-project');
+
+    var status = c.status || 'Draft';
+    if (['Projected', 'Approved', 'Pulled', 'Mailed'].includes(status)) {
+      show('step-approve');
+      if (status === 'Approved') {
+        document.getElementById('btn-unlock').style.display = '';
+      } else {
+        document.getElementById('btn-unlock').style.display = 'none';
+      }
+    }
+    if (['Approved', 'Pulled', 'Mailed'].includes(status)) {
+      show('step-files');
+      loadFiles();
+    }
+    if (['Pulled', 'Mailed'].includes(status)) {
+      show('step-actuals');
+    }
+
+    refreshDraft();
+  }
+
+  // --- Toggles ---
+  function renderToggles() {
+    renderToggleGrid('waterfall-toggles', WATERFALL_TOGGLES);
+    renderToggleGrid('suppression-toggles', SUPPRESSION_TOGGLES);
+  }
+
+  function renderToggleGrid(containerId, toggles) {
+    var html = '';
+    toggles.forEach(function(t) {
+      var checked = t.defaultOn ? 'checked' : '';
+      html += '<div class="toggle-item">' +
+        '<input type="checkbox" id="toggle-' + t.key + '" ' + checked + '>' +
+        '<label for="toggle-' + t.key + '">' + t.label + '</label>' +
+        '<span class="toggle-default">' + (t.defaultOn ? 'ON' : 'OFF') + '</span>' +
+        '</div>';
+    });
+    document.getElementById(containerId).innerHTML = html;
+  }
+
+  function getToggles() {
+    var toggles = {};
+    WATERFALL_TOGGLES.concat(SUPPRESSION_TOGGLES).forEach(function(t) {
+      var el = document.getElementById('toggle-' + t.key);
+      toggles[t.key] = el ? el.checked : t.defaultOn;
+    });
+    return toggles;
+  }
+
+  // --- Projection ---
+  function runProjection() {
+    if (!selectedCampaign) return;
+    var btn = document.getElementById('btn-project');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Running...';
+    showMsg('projection-msg', 'info', 'Running projection... This may take several minutes.');
+
+    var config = {
+      campaign_name: selectedCampaign.campaign_name,
+      appeal_code: selectedCampaign.appeal_code,
+      budget_qty_mailed: selectedCampaign.budget_qty_mailed,
+      budget_cost: selectedCampaign.budget_cost,
+      campaign_type: selectedCampaign.campaign_type,
+      toggles: getToggles(),
+    };
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.innerHTML = 'Run Projection';
+        if (result.error) {
+          showMsg('projection-msg', 'error', result.error);
+        } else if (result.needsConfirm) {
+          showMsg('projection-msg', 'warn', result.warning +
+            ' <button class="btn btn-outline" style="margin-left:8px;padding:4px 12px;font-size:12px" ' +
+            'onclick="runProjectionConfirmed()">Overwrite</button>');
+        } else {
+          showMsg('projection-msg', 'success', result.message);
+          show('step-approve');
+          refreshDraft();
+        }
+      })
+      .withFailureHandler(function(e) {
+        btn.disabled = false;
+        btn.innerHTML = 'Run Projection';
+        showMsg('projection-msg', 'error', 'Projection failed: ' + e);
+      })
+      .runProjection(config);
+  }
+
+  function runProjectionConfirmed() {
+    if (!selectedCampaign) return;
+    var config = {
+      campaign_name: selectedCampaign.campaign_name,
+      appeal_code: selectedCampaign.appeal_code,
+      budget_qty_mailed: selectedCampaign.budget_qty_mailed,
+      budget_cost: selectedCampaign.budget_cost,
+      campaign_type: selectedCampaign.campaign_type,
+      toggles: getToggles(),
+    };
+
+    showMsg('projection-msg', 'info', 'Clearing and re-running...');
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error) { showMsg('projection-msg', 'error', result.error); }
+        else { showMsg('projection-msg', 'success', result.message); refreshDraft(); }
+      })
+      .runProjectionConfirmed(config);
+  }
+
+  function refreshDraft() {
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error || !result.segments || result.segments.length === 0) {
+          hide('draft-preview');
+          return;
+        }
+        renderDraftTable(result.segments);
+        show('draft-preview');
+      })
+      .getDraftData();
+  }
+
+  function renderDraftTable(segments) {
+    var total = 0;
+    var html = '<h3>Draft Tab Preview</h3><table class="seg-table"><thead><tr>' +
+      '<th>Segment</th><th>Name</th><th class="num">Qty</th>' +
+      '<th class="num">Budget Fit</th><th>Status</th></tr></thead><tbody>';
+
+    segments.forEach(function(s) {
+      var qty = Number(s['Quantity'] || 0);
+      var fit = s['Budget Fit'] || qty;
+      var status = s['Status'] || 'Include';
+      var statusClass = 'status-include';
+      if (status.includes('Below')) statusClass = 'status-below';
+      else if (status.includes('Trim')) statusClass = 'status-trim';
+      if (!status.includes('Below Budget Line')) total += Number(fit);
+
+      html += '<tr><td>' + (s['Segment Code'] || '') + '</td>' +
+        '<td>' + (s['Segment Name'] || '') + '</td>' +
+        '<td class="num">' + fmt(qty) + '</td>' +
+        '<td class="num">' + fmt(fit) + '</td>' +
+        '<td class="' + statusClass + '">' + status + '</td></tr>';
+    });
+
+    html += '</tbody><tfoot><tr><td colspan="2"><strong>Total Mailable</strong></td>' +
+      '<td></td><td class="num"><strong>' + fmt(total) + '</strong></td><td></td></tr></tfoot></table>';
+
+    document.getElementById('draft-preview').innerHTML = html;
+  }
+
+  // --- Approve ---
+  function approvePlan() {
+    if (!selectedCampaign) return;
+    var btn = document.getElementById('btn-approve');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Approving...';
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.innerHTML = 'Approve Plan';
+        if (result.error) {
+          showMsg('approve-msg', 'error', result.error);
+        } else {
+          showMsg('approve-msg', 'success', result.message);
+          selectedCampaign.status = 'Approved';
+          show('step-files');
+          loadFiles();
+        }
+      })
+      .withFailureHandler(function(e) {
+        btn.disabled = false;
+        btn.innerHTML = 'Approve Plan';
+        showMsg('approve-msg', 'error', 'Approve failed: ' + e);
+      })
+      .approveProjection(selectedCampaign.appeal_code);
+  }
+
+  function unlockCampaign() {
+    if (!selectedCampaign) return;
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error) { showMsg('approve-msg', 'error', result.error); }
+        else {
+          showMsg('approve-msg', 'info', result.message);
+          selectedCampaign.status = 'Projected';
+          document.getElementById('btn-unlock').style.display = 'none';
+        }
+      })
+      .unlockCampaign(selectedCampaign.appeal_code);
+  }
+
+  // --- Files ---
+  function loadFiles() {
+    if (!selectedCampaign) return;
+    document.getElementById('files-loading').className = 'loading';
+    hide('file-list');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        document.getElementById('files-loading').className = 'hidden';
+        if (result.error) {
+          document.getElementById('files-loading').className = '';
+          document.getElementById('files-loading').textContent = result.error;
+          return;
+        }
+        var list = document.getElementById('file-list');
+        if (!result.files || result.files.length === 0) {
+          list.innerHTML = '<li>No output files yet. Generate files after approval.</li>';
+        } else {
+          list.innerHTML = result.files.map(function(f) {
+            return '<li><a href="' + f.url + '" target="_blank">' + f.name + '</a>' +
+              '<div class="file-meta">' + new Date(f.date).toLocaleString() +
+              ' &middot; ' + formatBytes(f.size) + '</div></li>';
+          }).join('');
+        }
+        show('file-list');
+      })
+      .getOutputFiles(selectedCampaign.appeal_code);
+  }
+
+  // --- SF Load ---
+  function loadToSalesforce() {
+    if (!selectedCampaign) return;
+    showMsg('sf-msg', 'info', '<span class="spinner"></span> Loading to Salesforce...');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error) { showMsg('sf-msg', 'error', result.error); }
+        else {
+          showMsg('sf-msg', 'success', result.message);
+          selectedCampaign.status = 'Pulled';
+          show('step-actuals');
+        }
+      })
+      .loadToSalesforce(selectedCampaign.appeal_code);
+  }
+
+  // --- Actuals ---
+  function submitActuals() {
+    if (!selectedCampaign) return;
+    var qty = document.getElementById('actual-qty').value;
+    var cost = document.getElementById('actual-cost').value;
+    if (!qty && !cost) {
+      showMsg('actuals-msg', 'warn', 'Enter at least one actual value.');
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error) { showMsg('actuals-msg', 'error', result.error); }
+        else {
+          showMsg('actuals-msg', 'success', result.message);
+          selectedCampaign.status = 'Mailed';
+        }
+      })
+      .updateActuals(selectedCampaign.appeal_code, {
+        actual_qty_mailed: qty,
+        actual_cost: cost,
+      });
+  }
+
+  // --- Helpers ---
+  function fmt(n) { return Number(n || 0).toLocaleString(); }
+  function formatBytes(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+    return (b/1048576).toFixed(1) + ' MB';
+  }
+  function show(id) { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+  function infoItem(label, value) {
+    return '<div class="info-item"><div class="info-label">' + label + '</div>' +
+      '<div class="info-value">' + value + '</div></div>';
+  }
+  function showMsg(id, type, html) {
+    document.getElementById(id).innerHTML = '<div class="msg msg-' + type + '">' + html + '</div>';
+  }
+</script>
+
+</body>
+</html>
