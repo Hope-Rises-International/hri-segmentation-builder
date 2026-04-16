@@ -116,12 +116,11 @@ def run_waterfall(
     # Tier 1 hard suppressions — remove entirely
     # ===================================================================
 
-    # Primary Contact Deceased (spec: only all-members-deceased suppresses,
-    # but this org uses Primary_Contact_is_Deceased__c — Tier 3 per Bekah's review.
-    # Using it here as closest equivalent to the spec's all-members-deceased.)
+    # All Household Members Deceased (npsp__All_Members_Deceased__c)
+    # Only all-members-deceased suppresses. One-contact-deceased is Tier 3.
     _suppress(
-        accts.get("Primary_Contact_is_Deceased__c", pd.Series(False, index=accts.index)) == True,
-        "Tier1: Contact Deceased"
+        accts.get("npsp__All_Members_Deceased__c", pd.Series(False, index=accts.index)) == True,
+        "Tier1: All Members Deceased"
     )
 
     # Do Not Contact
@@ -134,6 +133,12 @@ def run_waterfall(
     _suppress(
         accts.get("No_Mail_Code__c", pd.Series(False, index=accts.index)) == True,
         "Tier1: No Mail"
+    )
+
+    # Undeliverable Address (NPSP flag)
+    _suppress(
+        accts.get("npsp__Undeliverable_Address__c", pd.Series(False, index=accts.index)) == True,
+        "Tier1: Undeliverable Address"
     )
 
     # NCOA Deceased
