@@ -8,7 +8,7 @@ import gspread
 from google.auth import default
 import pandas as pd
 
-from config import MIC_SHEET_ID, MIC_CAMPAIGN_CALENDAR_TAB, MIC_DRAFT_TAB, DRAFT_COLUMNS
+from config import MIC_SHEET_ID, MIC_CAMPAIGN_CALENDAR_TAB, MIC_DRAFT_TAB, DRAFT_COLUMNS, DRIVE_OUTPUT_FOLDER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -111,19 +111,74 @@ def write_draft_tab(gc: gspread.Client, segment_summary: 'pd.DataFrame') -> None
 # Diagnostic Output
 # ---------------------------------------------------------------------------
 
-def write_diagnostic(gc: gspread.Client, tabs_data: dict[str, pd.DataFrame]) -> str:
-    """Write diagnostic DataFrames to a new Google Sheet.
+def _get_drive_service(gc: gspread.Client):
+    """Get Drive API v3 service from gspread's auth credentials."""
+    from googleapiclient.discovery import build
+    return build("drive", "v3", credentials=gc.http_client.auth)
 
-    Falls back to writing local CSVs if sheet creation fails (e.g., quota exceeded).
+
+def _create_sheet_in_shared_drive(gc: gspread.Client, title: str) -> gspread.Spreadsheet:
+    """Create a Google Sheet directly in the shared drive output folder.
+
+    Uses Drive API v3 with supportsAllDrives=True to bypass SA My Drive quota.
+    Then opens via gspread for tab/data operations.
+    """
+    drive = _get_drive_service(gc)
+    metadata = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [DRIVE_OUTPUT_FOLDER_ID],
+    }
+    file = drive.files().create(
+        body=metadata,
+        supportsAllDrives=True,
+        fields="id",
+    ).execute()
+
+    sheet_id = file["id"]
+    sh = gc.open_by_key(sheet_id)
+    logger.info(f"  Created sheet in shared drive folder: {sh.url}")
+    return sh
+
+
+def upload_csv_to_drive(gc: gspread.Client, filename: str, csv_content: str) -> str:
+    """Upload a CSV file directly to the shared drive output folder.
+
+    Uses Drive API v3 with supportsAllDrives=True.
+    Returns the file URL.
+    """
+    from googleapiclient.http import MediaInMemoryUpload
+
+    drive = _get_drive_service(gc)
+    metadata = {
+        "name": filename,
+        "mimeType": "text/csv",
+        "parents": [DRIVE_OUTPUT_FOLDER_ID],
+    }
+    media = MediaInMemoryUpload(csv_content.encode("utf-8"), mimetype="text/csv")
+    file = drive.files().create(
+        body=metadata,
+        media_body=media,
+        supportsAllDrives=True,
+        fields="id, webViewLink",
+    ).execute()
+
+    url = file.get("webViewLink", f"https://drive.google.com/file/d/{file['id']}")
+    logger.info(f"  Uploaded {filename} to shared drive: {url}")
+    return url
+
+
+def write_diagnostic(gc: gspread.Client, tabs_data: dict[str, pd.DataFrame]) -> str:
+    """Write diagnostic DataFrames to a Google Sheet in the shared drive output folder.
+
+    Falls back to writing local CSVs if sheet creation fails.
     Returns the sheet URL or local directory path.
     """
     import os
 
-    # Try Google Sheets first
     try:
         title = f"Segmentation Diagnostic — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        sh = gc.create(title)
-        logger.info(f"  Created diagnostic sheet: {sh.url}")
+        sh = _create_sheet_in_shared_drive(gc, title)
 
         for tab_name, df in tabs_data.items():
             ws = _ensure_worksheet(sh, tab_name, rows=max(len(df) + 10, 100), cols=max(len(df.columns) + 2, 20))
