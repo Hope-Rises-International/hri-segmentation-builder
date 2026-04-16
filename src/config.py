@@ -78,6 +78,62 @@ DRAFT_COLUMNS = [
 ]
 
 
+# --- CBNC Lookback ---
+CBNC_LOOKBACK_YEARS = 10
+# 10-year window start: FY17 = July 1, 2016
+CBNC_EARLIEST_DATE = "2016-07-01"
+
+# --- Lifecycle Stage Definitions (spec Section 5.2) ---
+# Thresholds in days
+NEW_DONOR_WINDOW_DAYS = 90
+SECOND_YEAR_MIN_DAYS = 365
+SECOND_YEAR_MAX_DAYS = 730
+
+# --- Giving Tier Thresholds (spec Section 5.4) ---
+MID_LEVEL_MIN = 1000.0
+MID_LEVEL_MAX = 4999.99
+MID_LEVEL_PROSPECT_MIN = 500.0
+MID_LEVEL_PROSPECT_MAX = 999.99
+MID_LEVEL_ACTIVE_MONTHS = 24  # gave in last 24 months
+DM_GIFT_HIGH_THRESHOLD = 500.0  # no single DM gift $500+
+
+# --- Segment Code Registry (spec Section 9.3) ---
+SEGMENT_CODES = {
+    "MJ01": "Major Gift Custom Package",
+    "ML01": "Mid-Level ($1,000–$4,999.99)",
+    "SU01": "Sustainer (Miracle Partner)",
+    "CS01": "Cornerstone Partner",
+    "ND01": "New Donor",
+    "AH01": "Active 0–6mo $50+ avg",
+    "AH02": "Active 0–6mo $25–$49.99 avg",
+    "AH03": "Active 0–6mo under $25 avg",
+    "AH04": "Active 7–12mo $50+ avg",
+    "AH05": "Active 7–12mo $25–$49.99 avg",
+    "AH06": "Active 7–12mo under $25 avg",
+    "MP01": "Mid-Level Prospect ($500–$999.99)",
+    "LR01": "Lapsed Recent 13–18mo",
+    "LR02": "Lapsed Recent 19–24mo",
+    "DL01": "Deep Lapsed 25–36mo $100+ cum",
+    "DL02": "Deep Lapsed 25–36mo under $100 cum",
+    "DL03": "Deep Lapsed 37–48mo $100+ cum",
+    "DL04": "Deep Lapsed 37–48mo under $100 cum",
+    "CB01": "CBNC Override",
+}
+
+# --- Default Waterfall Toggle States (spec Section 3, Step 2) ---
+DEFAULT_TOGGLES = {
+    "major_gift":       True,
+    "mid_level":        True,
+    "sustainer":        False,   # Default OFF — include for year-end/emergency
+    "cornerstone":      True,
+    "new_donor":        False,   # Default OFF — welcome window
+    "active_housefile": True,
+    "mid_level_prospect": True,
+    "lapsed":           True,
+    "deep_lapsed":      True,
+}
+
+
 def fy_label_for_date(d: date) -> str:
     """Return the FY label (e.g. 'FY25') for a given date."""
     if d.month >= FY_START_MONTH:

@@ -1,4 +1,4 @@
-"""Cloud Run entry point for the Segmentation Builder diagnostic."""
+"""Cloud Run entry point for the Segmentation Builder."""
 
 import sys
 import os

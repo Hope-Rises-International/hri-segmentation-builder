@@ -7,7 +7,7 @@ from google.cloud import secretmanager
 from simple_salesforce import Salesforce, SalesforceResourceNotFound
 import pandas as pd
 
-from config import GCP_PROJECT, SF_SECRETS, OPPORTUNITY_EARLIEST_DATE
+from config import GCP_PROJECT, SF_SECRETS, OPPORTUNITY_EARLIEST_DATE, CBNC_EARLIEST_DATE
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +48,25 @@ def query_all(sf: Salesforce, soql: str) -> list[dict]:
 
 ACCOUNT_SOQL = """
 SELECT Id, Name, Constituent_Id__c,
+       First_Name__c, Last_Name__c, Special_Salutation__c,
+       npo02__Formal_Greeting__c, npo02__Informal_Greeting__c,
        npo02__LastCloseDate__c, npo02__FirstCloseDate__c,
        npo02__NumberOfClosedOpps__c, npo02__TotalOppAmount__c,
        npo02__LargestAmount__c, npo02__AverageAmount__c,
        npo02__LastOppAmount__c, Days_Since_Last_Gift__c,
+       First_Gift_Age_Days__c,
+       Gifts_in_L12M__c, Cume_in_L12M__c,
+       Total_Gifts_Last_365_Days__c, Total_Gifts_730_365_Days_Ago__c,
+       Total_Gifts_This_Fiscal_Year__c, Total_Gifts_Last_Fiscal_Year__c,
        Cornerstone_Partner__c, Miracle_Partner__c,
        Staff_Manager__c, Lifecycle_Stage__c,
-       BillingState, BillingPostalCode
+       BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
+       General_Email__c,
+       Primary_Contact_is_Deceased__c, Do_Not_Contact__c, No_Mail_Code__c,
+       Address_Unknown__c, Not_Deliverable__c, NCOA_Deceased_Processing__c,
+       Newsletter_and_Prospectus_Only__c, Newsletters_Only__c,
+       No_Name_Sharing__c, Match_Only__c,
+       X1_Mailing_Xmas_Catalog__c, X2_Mailings_Xmas_Appeal__c
 FROM Account
 WHERE npo02__NumberOfClosedOpps__c > 0
   AND RecordType.Name = 'Household Account'
@@ -103,6 +115,32 @@ def fetch_opportunities(sf: Salesforce) -> pd.DataFrame:
         )
         df.drop(columns=["RecordType"], inplace=True)
     return df
+
+
+# ---------------------------------------------------------------------------
+# Pass 3: Opportunity dates for CBNC detection (10-year window)
+# ---------------------------------------------------------------------------
+
+CBNC_OPP_SOQL = f"""
+SELECT AccountId, CloseDate, Amount
+FROM Opportunity
+WHERE IsWon = true
+  AND Amount > 0
+  AND Account.RecordType.Name = 'Household Account'
+  AND RecordType.Name IN ('Donation', 'Funraise Donation')
+  AND CloseDate >= {CBNC_EARLIEST_DATE}
+ORDER BY AccountId, CloseDate
+""".strip()
+
+
+def fetch_opportunities_cbnc(sf: Salesforce) -> pd.DataFrame:
+    """Pass 3: Fetch opportunity dates for CBNC detection (10-year window)."""
+    logger.info("Pass 3: Querying opportunities for CBNC (10-year window)...")
+    start = time.time()
+    records = query_all(sf, CBNC_OPP_SOQL)
+    elapsed = time.time() - start
+    logger.info(f"  Fetched {len(records):,} opportunities in {elapsed:.1f}s")
+    return pd.DataFrame(records)
 
 
 def probe_sustainer_field(sf: Salesforce) -> bool:

@@ -95,6 +95,18 @@ def ensure_draft_tab(gc: gspread.Client) -> gspread.Worksheet:
     return ws
 
 
+def write_draft_tab(gc: gspread.Client, segment_summary: 'pd.DataFrame') -> None:
+    """Write segment summary data to the Draft tab on MIC.
+
+    Clears existing data and writes header + segment rows.
+    """
+    sh = gc.open_by_key(MIC_SHEET_ID)
+    ws = _ensure_worksheet(sh, MIC_DRAFT_TAB, rows=200, cols=len(DRAFT_COLUMNS))
+    values = _df_to_sheet_values(segment_summary)
+    ws.update(range_name="A1", values=values)
+    logger.info(f"  Draft tab written: {len(segment_summary)} segment rows")
+
+
 # ---------------------------------------------------------------------------
 # Diagnostic Output
 # ---------------------------------------------------------------------------
