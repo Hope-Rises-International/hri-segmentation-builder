@@ -1,0 +1,8 @@
+.git
+.gitignore
+*.md
+.DS_Store
+*.csv
+__pycache__/
+.claude/
+skills/

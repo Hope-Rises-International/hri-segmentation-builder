@@ -1,0 +1,6 @@
+functions-framework
+simple-salesforce==1.*
+gspread==6.*
+google-auth==2.*
+google-cloud-secret-manager==2.*
+pandas==2.*
