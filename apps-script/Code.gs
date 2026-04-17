@@ -162,8 +162,9 @@ function runProjection(campaignConfig) {
     };
   }
 
-  // Call Cloud Run — pipeline takes ~9 minutes
-  // Deploying user (Bill) must have roles/run.invoker on the service
+  // Call Cloud Run — pipeline takes ~9 minutes.
+  // UrlFetchApp times out at ~60s, but Cloud Run keeps processing.
+  // We treat the timeout as "pipeline started" and tell the user to refresh.
   try {
     const token = getCloudRunToken_();
     const response = UrlFetchApp.fetch(CLOUD_RUN_URL, {
@@ -186,7 +187,6 @@ function runProjection(campaignConfig) {
     }
 
     if (body.charAt(0) !== '{' && body.charAt(0) !== '[') {
-      // Not JSON — log and return readable error
       Logger.log('Cloud Run returned non-JSON (HTTP ' + code + '): ' + body.substring(0, 500));
       return { error: 'Cloud Run returned HTTP ' + code + '. Check Cloud Run logs for details.' };
     }
@@ -202,6 +202,17 @@ function runProjection(campaignConfig) {
       result: result,
     };
   } catch (e) {
+    // UrlFetchApp timeout (~60s) is expected — pipeline takes ~9 minutes.
+    // Cloud Run keeps processing after client disconnect.
+    if (e.message && (e.message.indexOf('Timeout') >= 0 || e.message.indexOf('timed out') >= 0 ||
+        e.message.indexOf('deadline') >= 0 || e.message.indexOf('DEADLINE') >= 0)) {
+      return {
+        status: 'running',
+        message: 'Projection started. The pipeline takes about 9 minutes to process 358K accounts. ' +
+                 'Cloud Run is working in the background. Click "Refresh Draft Tab" in a few minutes ' +
+                 'to see results. You can also check the MIC Draft tab directly.',
+      };
+    }
     return { error: 'Projection failed: ' + e.message };
   }
 }

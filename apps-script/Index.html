@@ -512,6 +512,9 @@
           showMsg('projection-msg', 'warn', result.warning +
             ' <button class="btn btn-outline" style="margin-left:8px;padding:4px 12px;font-size:12px" ' +
             'onclick="runProjectionConfirmed()">Overwrite</button>');
+        } else if (result.status === 'running') {
+          showMsg('projection-msg', 'info', result.message);
+          show('step-approve');
         } else {
           showMsg('projection-msg', 'success', result.message);
           show('step-approve');
