@@ -83,7 +83,10 @@ def _records_to_csv_gz(records, extra_cols=None):
 
     buf = io.BytesIO()
     with gzip.open(buf, "wt", encoding="utf-8", newline="") as gz:
-        writer = csv.DictWriter(gz, fieldnames=fields, extrasaction="ignore")
+        writer = csv.DictWriter(
+            gz, fieldnames=fields, extrasaction="ignore",
+            quoting=csv.QUOTE_ALL,  # Force-quote all fields for BQ compatibility
+        )
         writer.writeheader()
         for rec in records:
             row = {k: v for k, v in rec.items() if k != "attributes"}
@@ -94,6 +97,10 @@ def _records_to_csv_gz(records, extra_cols=None):
                         if sub_k != "attributes":
                             row[f"{k}.{sub_k}"] = sub_v
                     del row[k]
+            # Replace embedded newlines in string fields (BillingStreet, etc.)
+            for k, v in row.items():
+                if isinstance(v, str) and "\n" in v:
+                    row[k] = v.replace("\n", " ")
             if extra_cols:
                 row.update(extra_cols)
             writer.writerow(row)
@@ -122,8 +129,8 @@ def _load_gcs_to_bq(gcs_uri, table_id, fields):
         skip_leading_rows=1,
         autodetect=True,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        allow_quoted_newlines=True,
     )
-    # BQ auto-detects gzip from .csv.gz extension — no explicit compression param needed
 
     load_job = client.load_table_from_uri(gcs_uri, table_id, job_config=job_config)
     load_job.result()  # Wait for completion
