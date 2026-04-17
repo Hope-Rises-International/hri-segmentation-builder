@@ -8,7 +8,7 @@
 
 // --- Configuration ---
 const MIC_SHEET_ID = '12mLmegbb89Rf4-XGPfOozYRdmXmM67SP_QaW8aFTLWw';
-const CLOUD_RUN_URL = ''; // Set after deployment — Phase 9
+const CLOUD_RUN_URL = 'https://segmentation-builder-qelitx2nya-ue.a.run.app';
 const DRIVE_OUTPUT_FOLDER = '1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC';
 
 // MIC tab names
