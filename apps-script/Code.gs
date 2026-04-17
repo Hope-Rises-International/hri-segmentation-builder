@@ -9,7 +9,34 @@
 // --- Configuration ---
 const MIC_SHEET_ID = '12mLmegbb89Rf4-XGPfOozYRdmXmM67SP_QaW8aFTLWw';
 const CLOUD_RUN_URL = 'https://segmentation-builder-qelitx2nya-ue.a.run.app';
+const CLOUD_RUN_SA = 'hri-sfdc-sync@hri-receipt-automation.iam.gserviceaccount.com';
 const DRIVE_OUTPUT_FOLDER = '1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC';
+
+
+/**
+ * Mint an OIDC identity token for the SA via IAM Credentials API.
+ * The deploying user must have roles/iam.serviceAccountTokenCreator on the SA.
+ * Returns a token with audience = Cloud Run URL, which Cloud Run accepts.
+ */
+function getCloudRunToken_() {
+  const url = 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' +
+    CLOUD_RUN_SA + ':generateIdToken';
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'Authorization': 'Bearer ' + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({
+      audience: CLOUD_RUN_URL,
+      includeEmail: true,
+    }),
+    muteHttpExceptions: true,
+  });
+  if (response.getResponseCode() !== 200) {
+    throw new Error('Failed to mint OIDC token: HTTP ' + response.getResponseCode() +
+      ' — ' + response.getContentText().substring(0, 300));
+  }
+  return JSON.parse(response.getContentText()).token;
+}
 
 // MIC tab names
 const TAB_CAMPAIGN_CALENDAR = 'mic_flattened.csv';
@@ -138,7 +165,7 @@ function runProjection(campaignConfig) {
   // Call Cloud Run — pipeline takes ~9 minutes
   // Deploying user (Bill) must have roles/run.invoker on the service
   try {
-    const token = ScriptApp.getIdentityToken();
+    const token = getCloudRunToken_();
     const response = UrlFetchApp.fetch(CLOUD_RUN_URL, {
       method: 'POST',
       headers: {
@@ -450,7 +477,7 @@ function loadToSalesforce(campaignId) {
   // If Cloud Run is deployed, delegate the SF upsert to it
   if (CLOUD_RUN_URL) {
     try {
-      const token = ScriptApp.getIdentityToken();
+      const token = getCloudRunToken_();
       const response = UrlFetchApp.fetch(CLOUD_RUN_URL + '/sf-load', {
         method: 'POST',
         headers: {
