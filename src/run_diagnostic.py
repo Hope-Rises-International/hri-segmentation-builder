@@ -8,6 +8,12 @@ from salesforce_client import (
     connect_salesforce, fetch_accounts, fetch_opportunities,
     fetch_opportunities_cbnc, probe_sustainer_field,
 )
+from bq_reader import (
+    check_cache_freshness,
+    fetch_accounts_from_bq,
+    fetch_opportunities_from_bq,
+    fetch_opportunities_cbnc_from_bq,
+)
 from sheets_client import (
     get_sheets_client, read_campaign_calendar, write_diagnostic,
     write_draft_tab, upload_csv_to_drive,
@@ -88,33 +94,63 @@ def _pick_campaign_from_mic(mic_df: pd.DataFrame):
 
 
 def run_diagnostic() -> dict:
-    """Execute the full pipeline: SF → RFM → lifecycle → CBNC → waterfall → suppression → fitting."""
+    """Execute the full pipeline. Reads from BQ cache when fresh, falls back to live SF."""
     timings = {}
 
-    # --- Step 1: Connect to Salesforce ---
     logger.info("=" * 60)
-    logger.info("SEGMENTATION BUILDER — Phase 1 + 2 + 3")
+    logger.info("SEGMENTATION BUILDER PIPELINE")
     logger.info("=" * 60)
 
+    # --- Step 1: Check BQ cache freshness ---
     t0 = time.time()
-    sf = connect_salesforce()
-    timings["sf_connect"] = round(time.time() - t0, 1)
-    logger.info(f"Salesforce connected ({timings['sf_connect']}s)")
+    cache_fresh, cache_age_hours, cache_timestamp = check_cache_freshness()
+    timings["cache_check"] = round(time.time() - t0, 1)
 
-    sustainer_field_exists = probe_sustainer_field(sf)
+    data_source = "unknown"
+    sustainer_field_exists = True  # Known from prior runs
 
-    # --- Step 2-4: Fetch data ---
-    t0 = time.time()
-    accounts_df = fetch_accounts(sf)
-    timings["pass1"] = round(time.time() - t0, 1)
+    if cache_fresh:
+        # --- BQ path: read from cache (fast) ---
+        data_source = "bigquery"
+        logger.info(f"Using BQ cache (age: {cache_age_hours}h)")
 
-    t0 = time.time()
-    opps_df = fetch_opportunities(sf)
-    timings["pass2"] = round(time.time() - t0, 1)
+        t0 = time.time()
+        accounts_df = fetch_accounts_from_bq()
+        timings["pass1"] = round(time.time() - t0, 1)
 
-    t0 = time.time()
-    cbnc_opps_df = fetch_opportunities_cbnc(sf)
-    timings["pass3"] = round(time.time() - t0, 1)
+        t0 = time.time()
+        opps_df = fetch_opportunities_from_bq()
+        timings["pass2"] = round(time.time() - t0, 1)
+
+        t0 = time.time()
+        cbnc_opps_df = fetch_opportunities_cbnc_from_bq()
+        timings["pass3"] = round(time.time() - t0, 1)
+    else:
+        # --- SF fallback: live queries (slow) ---
+        data_source = "salesforce_live"
+        logger.info(f"BQ cache stale or missing — falling back to live Salesforce queries")
+
+        t0 = time.time()
+        sf = connect_salesforce()
+        timings["sf_connect"] = round(time.time() - t0, 1)
+        logger.info(f"Salesforce connected ({timings['sf_connect']}s)")
+
+        sustainer_field_exists = probe_sustainer_field(sf)
+
+        t0 = time.time()
+        accounts_df = fetch_accounts(sf)
+        timings["pass1"] = round(time.time() - t0, 1)
+
+        t0 = time.time()
+        opps_df = fetch_opportunities(sf)
+        timings["pass2"] = round(time.time() - t0, 1)
+
+        t0 = time.time()
+        cbnc_opps_df = fetch_opportunities_cbnc(sf)
+        timings["pass3"] = round(time.time() - t0, 1)
+
+    logger.info(f"Data source: {data_source} | Accounts: {len(accounts_df):,} | "
+                f"Opps 5yr: {len(opps_df):,} | Opps 10yr: {len(cbnc_opps_df):,}")
 
     # --- Step 5-7: Compute RFM, lifecycle, CBNC ---
     t0 = time.time()

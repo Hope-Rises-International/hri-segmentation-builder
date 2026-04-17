@@ -162,9 +162,8 @@ function runProjection(campaignConfig) {
     };
   }
 
-  // Call Cloud Run — pipeline takes ~9 minutes.
-  // UrlFetchApp times out at ~60s, but Cloud Run keeps processing.
-  // We treat the timeout as "pipeline started" and tell the user to refresh.
+  // Call Cloud Run — with BQ cache, pipeline completes in ~2-3 min.
+  // Without BQ cache (SF fallback), pipeline takes ~14 min and will timeout.
   try {
     const token = getCloudRunToken_();
     const response = UrlFetchApp.fetch(CLOUD_RUN_URL, {

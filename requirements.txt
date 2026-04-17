@@ -4,4 +4,6 @@ gspread==6.*
 google-auth==2.*
 google-api-python-client
 google-cloud-secret-manager==2.*
+google-cloud-bigquery==3.*
+google-cloud-storage==2.*
 pandas==2.*
