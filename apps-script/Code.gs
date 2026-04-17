@@ -138,7 +138,7 @@ function runProjection(campaignConfig) {
   // Call Cloud Run — pipeline takes ~9 minutes
   // Deploying user (Bill) must have roles/run.invoker on the service
   try {
-    const token = ScriptApp.getOAuthToken();
+    const token = ScriptApp.getIdentityToken();
     const response = UrlFetchApp.fetch(CLOUD_RUN_URL, {
       method: 'POST',
       headers: {
@@ -450,7 +450,7 @@ function loadToSalesforce(campaignId) {
   // If Cloud Run is deployed, delegate the SF upsert to it
   if (CLOUD_RUN_URL) {
     try {
-      const token = ScriptApp.getOAuthToken();
+      const token = ScriptApp.getIdentityToken();
       const response = UrlFetchApp.fetch(CLOUD_RUN_URL + '/sf-load', {
         method: 'POST',
         headers: {
