@@ -122,8 +122,8 @@ def _load_gcs_to_bq(gcs_uri, table_id, fields):
         skip_leading_rows=1,
         autodetect=True,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        compression="GZIP",
     )
+    # BQ auto-detects gzip from .csv.gz extension — no explicit compression param needed
 
     load_job = client.load_table_from_uri(gcs_uri, table_id, job_config=job_config)
     load_job.result()  # Wait for completion
