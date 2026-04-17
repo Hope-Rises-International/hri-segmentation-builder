@@ -135,7 +135,8 @@ function runProjection(campaignConfig) {
     };
   }
 
-  // Call Cloud Run (Phase 9)
+  // Call Cloud Run — pipeline takes ~9 minutes
+  // Deploying user (Bill) must have roles/run.invoker on the service
   try {
     const token = ScriptApp.getOAuthToken();
     const response = UrlFetchApp.fetch(CLOUD_RUN_URL, {
@@ -148,9 +149,24 @@ function runProjection(campaignConfig) {
       muteHttpExceptions: true,
     });
 
-    const result = JSON.parse(response.getContentText());
-    if (response.getResponseCode() !== 200) {
-      return { error: 'Cloud Run error: ' + (result.message || response.getContentText()) };
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+
+    // Guard against HTML error pages (401/403/5xx)
+    if (code === 401 || code === 403) {
+      return { error: 'Cloud Run auth failed (HTTP ' + code + '). ' +
+               'The deploying user needs roles/run.invoker on the Cloud Run service.' };
+    }
+
+    if (body.charAt(0) !== '{' && body.charAt(0) !== '[') {
+      // Not JSON — log and return readable error
+      Logger.log('Cloud Run returned non-JSON (HTTP ' + code + '): ' + body.substring(0, 500));
+      return { error: 'Cloud Run returned HTTP ' + code + '. Check Cloud Run logs for details.' };
+    }
+
+    const result = JSON.parse(body);
+    if (code !== 200) {
+      return { error: 'Cloud Run error (HTTP ' + code + '): ' + (result.message || body.substring(0, 200)) };
     }
 
     return {
