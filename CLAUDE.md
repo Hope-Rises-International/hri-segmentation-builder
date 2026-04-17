@@ -7,9 +7,14 @@
 
 ## About this project
 
-<!-- Replace this section with a brief description of what this project is,
-     how it's deployed, and what systems it connects to. Keep it to 5-10 lines.
-     This is the first thing a new session reads — make it count. -->
+HRI Segmentation Builder — direct mail segmentation engine. Cloud Run service (Python) + Apps Script web app.
+- **Cloud Run:** `segmentation-builder` in `hri-receipt-automation` (us-east1), 2Gi memory, SA `hri-sfdc-sync@hri-receipt-automation.iam.gserviceaccount.com`
+- **Cloud Run URL:** `https://segmentation-builder-qelitx2nya-ue.a.run.app`
+- **Apps Script project ID:** `1FaECO-ldkuWhS9gFulP_T1GBxqSFJ9_mmeJnBM40y50eIPAG14VpsBdr`
+- **Apps Script web app URL:** `https://script.google.com/macros/s/AKfycbwB4bkAboYdzdllptuxHDhcE8TnUpNHIBuFVAWpjQipegzVXc9_8Of8lxXPSpwx8G7AEQ/exec`
+- **MIC Sheet:** `12mLmegbb89Rf4-XGPfOozYRdmXmM67SP_QaW8aFTLWw`
+- **Drive output folder:** `1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC`
+- **Spec:** `SPEC.md` (v3.2) — all 9 phases complete
 
 ## Authentication
 
