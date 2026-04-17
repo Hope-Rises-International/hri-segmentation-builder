@@ -120,6 +120,49 @@ SEGMENT_CODES = {
     "CB01": "CBNC Override",
 }
 
+# --- PackageCode Routing (spec Section 6.1) ---
+# Configurable per segment group. Lettershop sorts on PackageCode to route creative.
+# Read from MIC Segment Rules tab at runtime; these are defaults.
+DEFAULT_PACKAGE_CODES = {
+    # Active Housefile → P01 (standard DM package)
+    "AH": "P01",
+    # Lapsed → P01
+    "LR": "P01",
+    # Deep Lapsed → P01
+    "DL": "P01",
+    # CBNC → P01
+    "CB": "P01",
+    # Mid-Level → P02 (high-touch: better paper, first-class postage)
+    "ML": "P02",
+    # Mid-Level Prospect → P01 (standard with upgrade messaging)
+    "MP": "P01",
+    # Cornerstone → P03 (legacy ALM branding, distinct package)
+    "CS": "P03",
+    # Major Gift → P04 (custom package, no ask amounts)
+    "MJ": "P04",
+    # Sustainer → P01
+    "SU": "P01",
+    # New Donor → P01
+    "ND": "P01",
+}
+
+
+def get_package_code(segment_code, package_overrides=None):
+    """Get PackageCode for a segment code.
+
+    Looks up by 2-char prefix (segment group). Overrides take precedence.
+    """
+    overrides = package_overrides or {}
+    # Check full segment code first (e.g., "CS01" override)
+    if segment_code in overrides:
+        return overrides[segment_code]
+    # Then check 2-char prefix (e.g., "CS" → P03)
+    prefix = segment_code[:2]
+    if prefix in overrides:
+        return overrides[prefix]
+    return DEFAULT_PACKAGE_CODES.get(prefix, "P01")
+
+
 # --- Default Waterfall Toggle States (spec Section 3, Step 2) ---
 DEFAULT_TOGGLES = {
     "major_gift":       True,

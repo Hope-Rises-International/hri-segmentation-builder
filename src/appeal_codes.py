@@ -13,35 +13,22 @@ import logging
 import pandas as pd
 import numpy as np
 
-from config import SEGMENT_CODES, fy_label_for_date
+from config import SEGMENT_CODES, fy_label_for_date, get_package_code
 
 logger = logging.getLogger(__name__)
 
-# Program code from segment group (spec Section 9.1 position 1)
-SEGMENT_TO_PROGRAM = {
-    "AH01": "R", "AH02": "R", "AH03": "R", "AH04": "R", "AH05": "R", "AH06": "R",
-    "LR01": "R", "LR02": "R",
-    "DL01": "R", "DL02": "R", "DL03": "R", "DL04": "R",
-    "CB01": "R",
-    "ML01": "M", "MP01": "M",
-    "CS01": "C",
-    "MJ01": "R",  # Major gift gets R (Renewal) program code
-    "SU01": "R",
-    "ND01": "R",
-}
-
-# Default package codes per segment group (spec Section 6.1)
-DEFAULT_PACKAGE_CODES = {
-    "AH01": "P01", "AH02": "P01", "AH03": "P01", "AH04": "P01", "AH05": "P01", "AH06": "P01",
-    "LR01": "P01", "LR02": "P01",
-    "DL01": "P01", "DL02": "P01", "DL03": "P01", "DL04": "P01",
-    "CB01": "P01",
-    "ML01": "P02",  # Mid-Level: better paper, first-class postage
-    "MP01": "P01",  # Mid-Level Prospect: standard package
-    "CS01": "P03",  # Cornerstone: legacy ALM branding
-    "MJ01": "P04",  # Major Gift: custom package
-    "SU01": "P01",
-    "ND01": "P01",
+# Program code from segment group prefix (spec Section 9.1 position 1)
+PROGRAM_BY_PREFIX = {
+    "AH": "R",  # Renewal/Housefile
+    "LR": "R",
+    "DL": "R",
+    "CB": "R",
+    "ML": "M",  # Mid-Level
+    "MP": "M",
+    "CS": "C",  # Cornerstone
+    "MJ": "R",  # Major Gift → Renewal program code
+    "SU": "R",
+    "ND": "R",
 }
 
 
@@ -53,6 +40,7 @@ def generate_appeal_codes(
     campaign_month: str = "",
     is_ca_version_campaign: bool = False,
     test_flag: str = "CTL",
+    package_overrides: dict = None,
 ) -> pd.DataFrame:
     """Generate 9-char and 15-char appeal codes + scanline for all assigned donors.
 
@@ -93,11 +81,11 @@ def generate_appeal_codes(
         # 9-char appeal code: from MIC Campaign Calendar (campaign-level, same for all donors)
         appeal_9 = campaign_appeal_code if len(campaign_appeal_code) == 9 else campaign_appeal_code[:9].ljust(9, "0")
 
-        # Program code
-        program = SEGMENT_TO_PROGRAM.get(seg_code, "R")
+        # Program code (by 2-char prefix)
+        program = PROGRAM_BY_PREFIX.get(seg_code[:2], "R")
 
-        # Package code
-        package = DEFAULT_PACKAGE_CODES.get(seg_code, "P01")
+        # Package code (configurable via overrides or defaults)
+        package = get_package_code(seg_code, package_overrides)
 
         # 15-char internal appeal code: [Program][FY][Campaign][Segment][Package][Test]
         # Positions: 1(program) + 2(FY) + 2(campaign) + 4(segment) + 3(package) + 3(test) = 15
