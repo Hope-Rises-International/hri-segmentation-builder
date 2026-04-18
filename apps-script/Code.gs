@@ -120,54 +120,52 @@ function getCampaigns() {
  */
 function getBaselineCampaigns() {
   const ss = SpreadsheetApp.openById(MIC_SHEET_ID);
-  let ws;
-  try {
-    ws = ss.getSheetByName('Segment Actuals');
-  } catch (e) {
-    return { baselines: [], message: 'Segment Actuals tab not found — Scorecard integration pending' };
-  }
+  const ws = ss.getSheetByName('Segment Actuals');
   if (!ws) return { baselines: [], message: 'Segment Actuals tab not found' };
 
-  const data = ws.getDataRange().getValues();
-  if (data.length <= 1) return { baselines: [], message: 'No baseline data yet' };
+  // Read only columns A (appeal_code) and D (fy) — not the full 9K+ row dataset
+  const lastRow = ws.getLastRow();
+  if (lastRow <= 1) return { baselines: [], message: 'No baseline data yet' };
 
-  const headers = data[0];
-  const col = {};
-  headers.forEach((h, i) => col[h] = i);
+  const codes = ws.getRange(2, 1, lastRow - 1, 1).getValues();  // Column A
+  const fys = ws.getRange(2, 4, lastRow - 1, 1).getValues();    // Column D
 
-  // Get distinct appeal_code + fy pairs
+  // Build distinct appeal_code + fy pairs
   const seen = {};
-  const baselines = [];
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const code = String(row[col['appeal_code']] || '').trim();
-    const fy = String(row[col['fy']] || '').trim();
+  const pairs = [];
+  for (let i = 0; i < codes.length; i++) {
+    const code = String(codes[i][0] || '').trim();
+    const fy = String(fys[i][0] || '').trim();
     const key = code + '|' + fy;
     if (!code || seen[key]) continue;
     seen[key] = true;
+    pairs.push({ code: code, fy: fy });
+  }
 
-    // Look up campaign name from Campaign Calendar
-    const calWs = ss.getSheetByName(TAB_CAMPAIGN_CALENDAR);
-    let name = code;
-    if (calWs) {
-      const calData = calWs.getDataRange().getValues();
-      const calHeaders = calData[0];
-      const calCol = {};
-      calHeaders.forEach((h, j) => calCol[h] = j);
-      for (let j = 1; j < calData.length; j++) {
-        if (String(calData[j][calCol['appeal_code']] || '').trim() === code) {
-          name = String(calData[j][calCol['campaign_name']] || code);
-          break;
-        }
+  // Look up campaign names from Campaign Calendar (one read, not per-pair)
+  const nameMap = {};
+  const calWs = ss.getSheetByName(TAB_CAMPAIGN_CALENDAR);
+  if (calWs) {
+    const calData = calWs.getDataRange().getValues();
+    const calHeaders = calData[0];
+    const calCol = {};
+    calHeaders.forEach((h, j) => calCol[h] = j);
+    for (let j = 1; j < calData.length; j++) {
+      const ac = String(calData[j][calCol['appeal_code']] || '').trim();
+      if (ac && !nameMap[ac]) {
+        nameMap[ac] = String(calData[j][calCol['campaign_name']] || ac);
       }
     }
-
-    baselines.push({
-      appeal_code: code,
-      fy: fy,
-      label: code + ' ' + name + ' ' + fy,
-    });
   }
+
+  const baselines = pairs.map(function(p) {
+    const name = nameMap[p.code] || p.code;
+    return {
+      appeal_code: p.code,
+      fy: p.fy,
+      label: p.code + ' ' + name + ' ' + p.fy,
+    };
+  });
 
   baselines.sort((a, b) => b.fy.localeCompare(a.fy) || a.appeal_code.localeCompare(b.appeal_code));
   return { baselines: baselines };
