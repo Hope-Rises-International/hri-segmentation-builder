@@ -52,7 +52,9 @@ def approve_projection(
     sh = gc.open_by_key(MIC_SHEET_ID)
 
     # --- Ensure Segment Detail tab exists ---
-    ws = _ensure_worksheet(sh, MIC_SEGMENT_DETAIL_TAB, rows=2000, cols=len(DRAFT_COLUMNS) + 2)
+    # Use enough columns to accommodate segment summary + Campaign ID + Approved At + economics
+    num_cols = max(len(segment_summary.columns) + 5, 25)
+    ws = _ensure_worksheet(sh, MIC_SEGMENT_DETAIL_TAB, rows=2000, cols=num_cols)
 
     # Read existing Segment Detail rows
     try:
@@ -72,12 +74,15 @@ def approve_projection(
 
     combined = pd.concat([existing_df, new_rows], ignore_index=True) if not existing_df.empty else new_rows
 
-    # Write back
+    # Write back — resize worksheet to fit data
     ws.clear()
     headers = combined.columns.tolist()
     values = [headers]
     for _, row in combined.iterrows():
         values.append([str(v) if pd.notna(v) else "" for v in row])
+    # Ensure worksheet has enough rows and columns
+    if ws.col_count < len(headers):
+        ws.resize(rows=max(ws.row_count, len(values) + 10), cols=len(headers))
     ws.update(range_name="A1", values=values)
 
     logger.info(f"  Segment Detail: {len(new_rows)} rows for campaign {campaign_id} "
