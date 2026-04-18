@@ -123,27 +123,34 @@ function getBaselineCampaigns() {
   const ws = ss.getSheetByName('Segment Actuals');
   if (!ws) return { baselines: [], message: 'Segment Actuals tab not found' };
 
-  // Read only columns A (appeal_code) and D (fy) — not the full 9K+ row dataset
   const lastRow = ws.getLastRow();
   if (lastRow <= 1) return { baselines: [], message: 'No baseline data yet' };
 
-  const codes = ws.getRange(2, 1, lastRow - 1, 1).getValues();  // Column A
-  const fys = ws.getRange(2, 4, lastRow - 1, 1).getValues();    // Column D
+  // Read columns A (appeal_code), D (fy), E (mail_date), G (gifts) — for grouping + filtering
+  const colA = ws.getRange(2, 1, lastRow - 1, 1).getValues();  // appeal_code
+  const colD = ws.getRange(2, 4, lastRow - 1, 1).getValues();  // fy
+  const colE = ws.getRange(2, 5, lastRow - 1, 1).getValues();  // mail_date
+  const colG = ws.getRange(2, 7, lastRow - 1, 1).getValues();  // gifts
 
-  // Build distinct appeal_code + fy pairs
-  const seen = {};
-  const pairs = [];
-  for (let i = 0; i < codes.length; i++) {
-    const code = String(codes[i][0] || '').trim();
-    const fy = String(fys[i][0] || '').trim();
-    const key = code + '|' + fy;
-    if (!code || seen[key]) continue;
-    seen[key] = true;
-    pairs.push({ code: code, fy: fy });
+  // Group by appeal_code: aggregate total gifts, capture fy and mail_date
+  const campaigns = {};
+  for (let i = 0; i < colA.length; i++) {
+    const code = String(colA[i][0] || '').trim();
+    if (!code) continue;
+    if (!campaigns[code]) {
+      campaigns[code] = {
+        code: code,
+        fy: String(colD[i][0] || '').trim(),
+        mail_date: String(colE[i][0] || '').trim(),
+        total_gifts: 0,
+      };
+    }
+    campaigns[code].total_gifts += Number(colG[i][0] || 0);
   }
 
-  // Look up campaign names from Campaign Calendar (one read, not per-pair)
+  // Look up campaign names from Campaign Calendar (single read)
   const nameMap = {};
+  const monthMap = {};
   const calWs = ss.getSheetByName(TAB_CAMPAIGN_CALENDAR);
   if (calWs) {
     const calData = calWs.getDataRange().getValues();
@@ -154,20 +161,28 @@ function getBaselineCampaigns() {
       const ac = String(calData[j][calCol['appeal_code']] || '').trim();
       if (ac && !nameMap[ac]) {
         nameMap[ac] = String(calData[j][calCol['campaign_name']] || ac);
+        monthMap[ac] = String(calData[j][calCol['month']] || '');
       }
     }
   }
 
-  const baselines = pairs.map(function(p) {
-    const name = nameMap[p.code] || p.code;
-    return {
-      appeal_code: p.code,
-      fy: p.fy,
-      label: p.code + ' ' + name + ' ' + p.fy,
-    };
-  });
+  // Build dropdown entries — one per campaign, only those with gifts > 0
+  const baselines = [];
+  for (const code in campaigns) {
+    const c = campaigns[code];
+    if (c.total_gifts <= 0) continue;  // Skip campaigns with no actual data
+    const name = nameMap[code] || code;
+    const month = monthMap[code] || '';
+    baselines.push({
+      appeal_code: code,
+      fy: c.fy,
+      mail_date: c.mail_date,
+      label: code + ' — ' + (month ? month + ' ' : '') + name + ' — ' + c.fy,
+    });
+  }
 
-  baselines.sort((a, b) => b.fy.localeCompare(a.fy) || a.appeal_code.localeCompare(b.appeal_code));
+  // Sort by mail_date descending (most recent first), then FY
+  baselines.sort((a, b) => b.mail_date.localeCompare(a.mail_date) || b.fy.localeCompare(a.fy));
   return { baselines: baselines };
 }
 
