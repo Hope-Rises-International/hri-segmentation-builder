@@ -22,7 +22,16 @@ def run_segmentation_diagnostic(request):
     from src.run_diagnostic import run_diagnostic
     start = time.time()
     try:
-        result = run_diagnostic()
+        # Parse request payload for toggle overrides
+        config = {}
+        try:
+            config = request.get_json(silent=True) or {}
+        except Exception:
+            pass
+        toggles = config.get("toggles", None)
+        if toggles:
+            print(f"Received toggles from UI: {toggles}")
+        result = run_diagnostic(toggles=toggles)
         duration = time.time() - start
         return {
             "status": "success",

@@ -91,8 +91,13 @@ def _pick_campaign_from_mic(mic_df: pd.DataFrame):
     }
 
 
-def run_diagnostic() -> dict:
-    """Execute the full pipeline. Reads from BQ cache when fresh, falls back to live SF."""
+def run_diagnostic(toggles=None) -> dict:
+    """Execute the full pipeline. Reads from BQ cache when fresh, falls back to live SF.
+
+    Args:
+        toggles: Optional dict of waterfall/suppression toggle overrides from the UI.
+                 If None, uses DEFAULT_TOGGLES.
+    """
     timings = {}
     pipeline_start = time.time()
 
@@ -183,7 +188,7 @@ def run_diagnostic() -> dict:
     # --- Waterfall assignment ---
     logger.info(f"[{_elapsed()}s] Running waterfall...")
     t0 = time.time()
-    waterfall_result = run_waterfall(accounts_df, rfm_df, lifecycle, cbnc_ids)
+    waterfall_result = run_waterfall(accounts_df, rfm_df, lifecycle, cbnc_ids, toggles=toggles)
     timings["waterfall"] = round(time.time() - t0, 1)
     logger.info(f"[{_elapsed()}s] Waterfall done ({timings['waterfall']}s)")
 

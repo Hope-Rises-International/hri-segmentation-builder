@@ -467,13 +467,23 @@
     var html = '';
     toggles.forEach(function(t) {
       var checked = t.defaultOn ? 'checked' : '';
+      var stateText = t.defaultOn ? 'ON' : 'OFF';
       html += '<div class="toggle-item">' +
-        '<input type="checkbox" id="toggle-' + t.key + '" ' + checked + '>' +
+        '<input type="checkbox" id="toggle-' + t.key + '" ' + checked +
+        ' onchange="updateToggleLabel(\'' + t.key + '\')">' +
         '<label for="toggle-' + t.key + '">' + t.label + '</label>' +
-        '<span class="toggle-default">' + (t.defaultOn ? 'ON' : 'OFF') + '</span>' +
+        '<span class="toggle-default" id="label-' + t.key + '">' + stateText + '</span>' +
         '</div>';
     });
     document.getElementById(containerId).innerHTML = html;
+  }
+
+  function updateToggleLabel(key) {
+    var el = document.getElementById('toggle-' + key);
+    var label = document.getElementById('label-' + key);
+    if (el && label) {
+      label.textContent = el.checked ? 'ON' : 'OFF';
+    }
   }
 
   function getToggles() {
