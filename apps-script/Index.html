@@ -613,6 +613,11 @@
         }
         renderDraftTable(result.segments);
         show('draft-preview');
+        // Show Steps 4-6 whenever Draft has data
+        show('step-approve');
+        show('step-files');
+        show('step-actuals');
+        loadFiles();
       })
       .getDraftData();
   }
