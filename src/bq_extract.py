@@ -1,14 +1,19 @@
-"""Nightly SF data extract: Salesforce Bulk API 2.0 → GCS → BigQuery.
+"""Nightly SF data extract: Account-only → GCS → BigQuery.
 
 Triggered by Cloud Scheduler at 11 PM ET nightly.
-Populates sf_cache.accounts and sf_cache.opportunities in BigQuery.
+No Opportunity queries — CBNC and $500 DM flags approximated from Account rollup fields.
+
+Architecture:
+1. Bulk query Account (all rollup fields + per-FY gift counts)
+2. CSV → GCS → BQ sf_cache.accounts_raw
+3. BQ SQL: compute is_cbnc + has_dm_gift_500 → sf_cache.accounts
 """
 
 from __future__ import annotations
 import csv
-import gzip
-import io
 import logging
+import os
+import tempfile
 import time
 from datetime import datetime
 
@@ -16,19 +21,17 @@ from google.cloud import bigquery, storage
 from simple_salesforce import Salesforce
 
 from salesforce_client import connect_salesforce, query_all
-from config import (
-    GCP_PROJECT, OPPORTUNITY_EARLIEST_DATE, CBNC_EARLIEST_DATE,
-)
+from config import GCP_PROJECT
 
 logger = logging.getLogger(__name__)
 
 GCS_BUCKET = "hri-sf-cache"
 GCS_PREFIX = "salesforce"
 BQ_DATASET = "sf_cache"
-BQ_ACCOUNTS_TABLE = f"{GCP_PROJECT}.{BQ_DATASET}.accounts"
-BQ_OPPORTUNITIES_TABLE = f"{GCP_PROJECT}.{BQ_DATASET}.opportunities"
+BQ_ACCOUNTS_RAW = f"{GCP_PROJECT}.{BQ_DATASET}.accounts_raw"
+BQ_ACCOUNTS_FINAL = f"{GCP_PROJECT}.{BQ_DATASET}.accounts"
 
-# Account SOQL — same fields as salesforce_client.ACCOUNT_SOQL
+# Account SOQL — all rollup fields + per-FY gift counts for CBNC approximation
 ACCOUNT_SOQL = """
 SELECT Id, Name, Constituent_Id__c,
        First_Name__c, Last_Name__c, Special_Salutation__c,
@@ -41,6 +44,11 @@ SELECT Id, Name, Constituent_Id__c,
        Gifts_in_L12M__c, Cume_in_L12M__c,
        Total_Gifts_Last_365_Days__c, Total_Gifts_730_365_Days_Ago__c,
        Total_Gifts_This_Fiscal_Year__c, Total_Gifts_Last_Fiscal_Year__c,
+       Number_of_Gifts_Last_Fiscal_Year__c,
+       Number_of_Gifts_2_Fiscal_Years_Ago__c,
+       Number_of_Gifts_3_Fiscal_Years_Ago__c,
+       Number_of_Gifts_4_Fiscal_Years_Ago__c,
+       Number_of_Gifts_5_Fiscal_Years_Ago__c,
        Cornerstone_Partner__c, Miracle_Partner__c,
        npsp__Sustainer__c,
        Staff_Manager__c, Lifecycle_Stage__c,
@@ -57,73 +65,106 @@ WHERE npo02__NumberOfClosedOpps__c > 0
   AND RecordType.Name = 'Household Account'
 """.strip()
 
-# Opportunity SOQL — combined: 10-year window covers both RFM (5yr) and CBNC (10yr)
-OPPORTUNITY_SOQL = f"""
-SELECT AccountId, Amount, CloseDate,
-       npe03__Recurring_Donation__c, RecordType.Name
-FROM Opportunity
-WHERE IsWon = true
-  AND Amount > 0
-  AND Account.RecordType.Name = 'Household Account'
-  AND RecordType.Name IN ('Donation', 'Funraise Donation')
-  AND CloseDate >= {CBNC_EARLIEST_DATE}
-ORDER BY AccountId, CloseDate
-""".strip()
+# BQ merge query: compute is_cbnc and has_dm_gift_500 from Account rollup fields
+# CBNC approximation: 2+ FYs with gifts AND at least one gap year between them (5-FY window)
+# $500 DM approximation: npo02__LargestAmount__c >= 500
+MERGE_SQL = f"""
+CREATE OR REPLACE TABLE `{BQ_ACCOUNTS_FINAL}` AS
+WITH fy_flags AS (
+  SELECT
+    Id,
+    COALESCE(SAFE_CAST(Number_of_Gifts_Last_Fiscal_Year__c AS INT64), 0) AS fy1,
+    COALESCE(SAFE_CAST(Number_of_Gifts_2_Fiscal_Years_Ago__c AS INT64), 0) AS fy2,
+    COALESCE(SAFE_CAST(Number_of_Gifts_3_Fiscal_Years_Ago__c AS INT64), 0) AS fy3,
+    COALESCE(SAFE_CAST(Number_of_Gifts_4_Fiscal_Years_Ago__c AS INT64), 0) AS fy4,
+    COALESCE(SAFE_CAST(Number_of_Gifts_5_Fiscal_Years_Ago__c AS INT64), 0) AS fy5
+  FROM `{BQ_ACCOUNTS_RAW}`
+),
+cbnc_check AS (
+  SELECT
+    Id,
+    -- Count of FYs with gifts
+    IF(fy1 > 0, 1, 0) + IF(fy2 > 0, 1, 0) + IF(fy3 > 0, 1, 0)
+      + IF(fy4 > 0, 1, 0) + IF(fy5 > 0, 1, 0) AS giving_fys,
+    -- Build a giving pattern string like '10101' for gap detection
+    CONCAT(
+      IF(fy1 > 0, '1', '0'),
+      IF(fy2 > 0, '1', '0'),
+      IF(fy3 > 0, '1', '0'),
+      IF(fy4 > 0, '1', '0'),
+      IF(fy5 > 0, '1', '0')
+    ) AS pattern
+  FROM fy_flags
+)
+SELECT
+  a.*,
+  -- CBNC: 2+ giving FYs AND pattern contains '10' (a gap after a giving year)
+  CASE WHEN c.giving_fys >= 2 AND REGEXP_CONTAINS(c.pattern, r'10+1')
+    THEN TRUE ELSE FALSE
+  END AS is_cbnc,
+  -- $500 DM approximation: largest gift >= 500
+  CASE WHEN SAFE_CAST(a.npo02__LargestAmount__c AS FLOAT64) >= 500
+    THEN TRUE ELSE FALSE
+  END AS has_dm_gift_500,
+  CURRENT_TIMESTAMP() AS _load_timestamp
+FROM `{BQ_ACCOUNTS_RAW}` a
+LEFT JOIN cbnc_check c ON a.Id = c.Id
+"""
 
 
-def _records_to_csv_gz(records, extra_cols=None):
-    """Convert SF records to gzipped CSV bytes."""
+def _flatten_record(rec):
+    """Flatten a SF record dict, removing attributes and handling nested dicts."""
+    row = {}
+    for k, v in rec.items():
+        if k == "attributes":
+            continue
+        if isinstance(v, dict):
+            for sub_k, sub_v in v.items():
+                if sub_k != "attributes":
+                    row[f"{k}_{sub_k}"] = sub_v
+        elif isinstance(v, str):
+            row[k] = v.replace("\n", " ").replace("\r", "")
+        else:
+            row[k] = v
+    return row
+
+
+def _write_records_to_tempfile(records):
+    """Write SF records to a temp CSV file. Returns (path, fieldnames)."""
     if not records:
-        return b"", []
+        return None, []
 
-    # Get field names from first record
-    fields = [k for k in records[0].keys() if k != "attributes"]
-    if extra_cols:
-        fields.extend(extra_cols.keys())
+    flat_sample = [_flatten_record(r) for r in records[:10]]
+    fieldnames = list(flat_sample[0].keys())
 
-    buf = io.BytesIO()
-    with gzip.open(buf, "wt", encoding="utf-8", newline="") as gz:
-        writer = csv.DictWriter(
-            gz, fieldnames=fields, extrasaction="ignore",
-            quoting=csv.QUOTE_ALL,  # Force-quote all fields for BQ compatibility
-        )
-        writer.writeheader()
-        for rec in records:
-            row = {k: v for k, v in rec.items() if k != "attributes"}
-            # Flatten nested dicts (e.g., RecordType.Name)
-            for k, v in list(row.items()):
-                if isinstance(v, dict):
-                    for sub_k, sub_v in v.items():
-                        if sub_k != "attributes":
-                            row[f"{k}.{sub_k}"] = sub_v
-                    del row[k]
-            # Replace embedded newlines in string fields (BillingStreet, etc.)
-            for k, v in row.items():
-                if isinstance(v, str) and "\n" in v:
-                    row[k] = v.replace("\n", " ")
-            if extra_cols:
-                row.update(extra_cols)
-            writer.writerow(row)
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="")
+    writer = csv.DictWriter(tmp, fieldnames=fieldnames, extrasaction="ignore", quoting=csv.QUOTE_ALL)
+    writer.writeheader()
 
-    return buf.getvalue(), fields
+    for i in range(0, len(records), 10000):
+        for rec in records[i:i + 10000]:
+            writer.writerow(_flatten_record(rec))
+
+    tmp.close()
+    logger.info(f"  Wrote {len(records):,} records to {tmp.name}")
+    return tmp.name, fieldnames
 
 
-def _upload_to_gcs(csv_gz_bytes, blob_name):
-    """Upload gzipped CSV to GCS."""
+def _upload_file_to_gcs(filepath, blob_name):
+    """Upload a file to GCS."""
     client = storage.Client(project=GCP_PROJECT)
     bucket = client.bucket(GCS_BUCKET)
     blob = bucket.blob(blob_name)
-    blob.upload_from_string(csv_gz_bytes, content_type="application/gzip")
+    blob.upload_from_filename(filepath)
     gcs_uri = f"gs://{GCS_BUCKET}/{blob_name}"
-    size_mb = len(csv_gz_bytes) / 1048576
+    size_mb = os.path.getsize(filepath) / 1048576
     logger.info(f"  Uploaded {blob_name} ({size_mb:.1f} MB) to {gcs_uri}")
     return gcs_uri
 
 
-def _load_gcs_to_bq(gcs_uri, table_id, fields):
-    """Load gzipped CSV from GCS to BigQuery (full replace)."""
+def _load_gcs_to_bq(gcs_uri, table_id):
+    """Load CSV from GCS to BigQuery (full replace, autodetect schema)."""
     client = bigquery.Client(project=GCP_PROJECT)
-
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
         skip_leading_rows=1,
@@ -131,43 +172,19 @@ def _load_gcs_to_bq(gcs_uri, table_id, fields):
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         allow_quoted_newlines=True,
     )
-
     load_job = client.load_table_from_uri(gcs_uri, table_id, job_config=job_config)
-    load_job.result()  # Wait for completion
-
+    load_job.result()
     table = client.get_table(table_id)
     logger.info(f"  Loaded {table.num_rows:,} rows to {table_id}")
     return table.num_rows
 
 
-def _add_load_timestamp(table_id):
-    """Add _load_timestamp column to a BQ table."""
-    client = bigquery.Client(project=GCP_PROJECT)
-    query = f"""
-    ALTER TABLE `{table_id}`
-    ADD COLUMN IF NOT EXISTS _load_timestamp TIMESTAMP;
-
-    UPDATE `{table_id}`
-    SET _load_timestamp = CURRENT_TIMESTAMP()
-    WHERE TRUE;
-    """
-    # BQ doesn't support multi-statement in one query via the Python client easily.
-    # Use two separate queries.
-    try:
-        client.query(f"ALTER TABLE `{table_id}` ADD COLUMN IF NOT EXISTS _load_timestamp TIMESTAMP").result()
-    except Exception:
-        pass  # Column may already exist
-
-    client.query(f"UPDATE `{table_id}` SET _load_timestamp = CURRENT_TIMESTAMP() WHERE TRUE").result()
-    logger.info(f"  Set _load_timestamp on {table_id}")
-
-
 def run_nightly_extract():
-    """Execute the full nightly extract: SF → GCS → BQ."""
+    """Execute nightly extract: SF Accounts → GCS → BQ → merge (compute flags)."""
     timings = {}
     date_str = datetime.now().strftime("%Y-%m-%d")
     logger.info("=" * 60)
-    logger.info(f"NIGHTLY SF EXTRACT — {date_str}")
+    logger.info(f"NIGHTLY SF EXTRACT (accounts only) — {date_str}")
     logger.info("=" * 60)
 
     # --- Connect to SF ---
@@ -177,52 +194,56 @@ def run_nightly_extract():
     logger.info(f"Salesforce connected ({timings['sf_connect']}s)")
 
     # --- Extract Accounts ---
-    logger.info("Extracting accounts...")
+    logger.info("Step 1: Querying accounts from Salesforce...")
     t0 = time.time()
     account_records = query_all(sf, ACCOUNT_SOQL)
-    timings["sf_accounts"] = round(time.time() - t0, 1)
-    logger.info(f"  Fetched {len(account_records):,} accounts in {timings['sf_accounts']}s")
+    timings["sf_query"] = round(time.time() - t0, 1)
+    logger.info(f"  Fetched {len(account_records):,} accounts in {timings['sf_query']}s")
 
+    # --- Write to temp file → GCS → BQ ---
+    logger.info("Step 2: Loading to BigQuery...")
     t0 = time.time()
-    acct_csv_gz, acct_fields = _records_to_csv_gz(account_records)
-    acct_gcs_uri = _upload_to_gcs(acct_csv_gz, f"{GCS_PREFIX}/{date_str}/accounts.csv.gz")
-    acct_rows = _load_gcs_to_bq(acct_gcs_uri, BQ_ACCOUNTS_TABLE, acct_fields)
-    _add_load_timestamp(BQ_ACCOUNTS_TABLE)
-    timings["bq_accounts"] = round(time.time() - t0, 1)
+    acct_path, _ = _write_records_to_tempfile(account_records)
+    acct_gcs = _upload_file_to_gcs(acct_path, f"{GCS_PREFIX}/{date_str}/accounts.csv")
+    acct_rows = _load_gcs_to_bq(acct_gcs, BQ_ACCOUNTS_RAW)
+    os.unlink(acct_path)
+    del account_records
+    timings["bq_load"] = round(time.time() - t0, 1)
 
-    # --- Extract Opportunities ---
-    logger.info("Extracting opportunities...")
+    # --- BQ merge: compute is_cbnc + has_dm_gift_500 ---
+    logger.info("Step 3: Computing is_cbnc + has_dm_gift_500 flags...")
     t0 = time.time()
-    opp_records = query_all(sf, OPPORTUNITY_SOQL)
-    timings["sf_opps"] = round(time.time() - t0, 1)
-    logger.info(f"  Fetched {len(opp_records):,} opportunities in {timings['sf_opps']}s")
+    bq_client = bigquery.Client(project=GCP_PROJECT)
+    merge_job = bq_client.query(MERGE_SQL)
+    merge_job.result()
+    timings["bq_merge"] = round(time.time() - t0, 1)
 
-    # Flatten RecordType.Name
-    for rec in opp_records:
-        if "RecordType" in rec:
-            rt = rec.pop("RecordType", {})
-            if isinstance(rt, dict):
-                rec["RecordType.Name"] = rt.get("Name", "")
+    # Verify
+    final_table = bq_client.get_table(BQ_ACCOUNTS_FINAL)
+    final_rows = final_table.num_rows
 
-    t0 = time.time()
-    opp_csv_gz, opp_fields = _records_to_csv_gz(opp_records)
-    opp_gcs_uri = _upload_to_gcs(opp_csv_gz, f"{GCS_PREFIX}/{date_str}/opportunities.csv.gz")
-    opp_rows = _load_gcs_to_bq(opp_gcs_uri, BQ_OPPORTUNITIES_TABLE, opp_fields)
-    _add_load_timestamp(BQ_OPPORTUNITIES_TABLE)
-    timings["bq_opps"] = round(time.time() - t0, 1)
+    cbnc_count = list(bq_client.query(
+        f"SELECT COUNT(*) AS n FROM `{BQ_ACCOUNTS_FINAL}` WHERE is_cbnc = TRUE"
+    ).result())[0].n
+    dm500_count = list(bq_client.query(
+        f"SELECT COUNT(*) AS n FROM `{BQ_ACCOUNTS_FINAL}` WHERE has_dm_gift_500 = TRUE"
+    ).result())[0].n
 
     total_time = sum(timings.values())
     logger.info("=" * 60)
     logger.info(f"EXTRACT COMPLETE — {total_time:.0f}s total")
-    logger.info(f"  Accounts: {acct_rows:,} rows in BQ")
-    logger.info(f"  Opportunities: {opp_rows:,} rows in BQ")
+    logger.info(f"  Accounts: {final_rows:,} rows")
+    logger.info(f"  is_cbnc = TRUE: {cbnc_count:,}")
+    logger.info(f"  has_dm_gift_500 = TRUE: {dm500_count:,}")
     logger.info(f"  Timings: {timings}")
 
     return {
         "status": "success",
         "date": date_str,
-        "accounts": acct_rows,
-        "opportunities": opp_rows,
+        "accounts_raw": acct_rows,
+        "accounts_final": final_rows,
+        "is_cbnc_count": cbnc_count,
+        "has_dm_gift_500_count": dm500_count,
         "timings": timings,
         "total_seconds": round(total_time, 1),
     }

@@ -1,12 +1,13 @@
-"""Output file generation per spec Section 10.
+"""Output file generation per spec Section 10 — VECTORIZED.
+
+All output DataFrames built via pandas merge/join operations.
+No per-row Python loops. No _build_record(). No accts.at[] calls.
 
 Produces:
 1. Printer File CSV — for VeraData/lettershop (no 15-char codes, clean records only)
 2. Internal Matchback File CSV — for HRI (all codes + analyst fields, includes excluded records)
 3. Housefile Suppression File CSV — for agency merge/purge
 4. Exceptions CSV — records excluded due to missing/duplicate Constituent_Id
-
-Plus holdout logic (5% random sample when toggle ON).
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ PRINTER_COLUMNS = [
     "CurrentFYGiving", "PriorFYGiving", "CAVersion",
 ]
 
-# Matchback File columns (spec Section 10.2) + exclusion_reason
+# Matchback File columns (spec Section 10.2)
 MATCHBACK_COLUMNS = [
     "DonorID", "CampaignAppealCode", "InternalAppealCode",
     "SegmentCode", "SegmentName", "PackageCode", "TestFlag",
@@ -43,104 +44,79 @@ MATCHBACK_COLUMNS = [
 ]
 
 
-def _get_acct_field(accts, acct_id, field, default=""):
-    """Safely get a field value from the accounts DataFrame."""
-    try:
-        val = accts.at[acct_id, field]
-        if pd.isna(val) or val is None:
-            return default
-        return val
-    except (KeyError, ValueError):
-        return default
+def _format_zip_series(s):
+    """Vectorized ZIP formatting: preserve leading zeros."""
+    s = s.fillna("").astype(str).str.strip()
+    s = s.str.replace(r'\.0$', '', regex=True)
+    # Pad numeric ZIPs shorter than 5 digits
+    is_short_numeric = s.str.match(r'^\d{1,4}$')
+    s = s.where(~is_short_numeric, s.str.zfill(5))
+    return s
 
 
-def _format_zip(zip_val) -> str:
-    """Preserve ZIP leading zeros, handle ZIP+4."""
-    if pd.isna(zip_val) or zip_val is None:
-        return ""
-    z = str(zip_val).strip()
-    if z.endswith(".0"):
-        z = z[:-2]
-    if z.isdigit() and len(z) < 5:
-        z = z.zfill(5)
-    return z
+def _split_street(s):
+    """Vectorized street splitting: first line → Address1, second → Address2."""
+    s = s.fillna("").astype(str)
+    parts = s.str.split('\n', n=1, expand=True)
+    addr1 = parts[0].str.strip() if 0 in parts.columns else pd.Series("", index=s.index)
+    addr2 = parts[1].str.strip() if 1 in parts.columns else pd.Series("", index=s.index)
+    return addr1.fillna(""), addr2.fillna("")
 
 
-def apply_constituent_id_filter(
-    codes_df: pd.DataFrame,
-    accounts_df: pd.DataFrame,
-) -> tuple:
-    """Apply Constituent_Id data quality filter per architect instruction.
+def _fix_salutation(sal, last):
+    """Vectorized salutation fix: append last name if salutation is single word."""
+    sal = sal.fillna("").astype(str)
+    last = last.fillna("").astype(str)
+    is_single_word = (sal != "") & (~sal.str.contains(' ')) & (last != "")
+    return sal.where(~is_single_word, sal + " " + last)
 
-    Excludes:
-    1. Records where Constituent_Id__c is null or empty
-    2. Records where Constituent_Id__c is shared by 2+ accounts (ALL sharing accounts excluded)
 
-    Args:
-        codes_df: Appeal code data with account_id and donor_id columns.
-        accounts_df: Account data with Constituent_Id__c.
+def apply_constituent_id_filter(codes_df, accounts_df):
+    """Apply Constituent_Id data quality filter — vectorized.
 
-    Returns:
-        (clean_df, excluded_df, exceptions_df) where:
-        - clean_df: records safe for Printer File
-        - excluded_df: records to include in Matchback with exclusion_reason
-        - exceptions_df: formatted for exceptions CSV upload
+    Returns (clean_df, excluded_df, exceptions_df).
     """
     accts = accounts_df.copy()
     if "Id" in accts.columns:
         accts = accts.set_index("Id")
 
-    # Get Constituent_Id for each record in codes_df
-    constituent_ids = codes_df["account_id"].map(
-        lambda aid: _get_acct_field(accts, aid, "Constituent_Id__c", default="")
-    )
-    constituent_ids = constituent_ids.fillna("").astype(str).str.strip()
+    # Map Constituent_Id onto codes_df
+    cid_map = accts["Constituent_Id__c"].fillna("").astype(str).str.strip()
+    constituent_ids = codes_df["account_id"].map(cid_map).fillna("")
 
-    # 1. Missing Constituent_Id
+    # Missing
     missing_mask = (constituent_ids == "") | (constituent_ids == "nan") | (constituent_ids == "None")
-    missing_count = missing_mask.sum()
 
-    # 2. Duplicate Constituent_Id (across ALL accounts in the pipeline dataset, not just codes_df)
-    # Build the full duplicate set from accounts_df
-    all_cids = accts["Constituent_Id__c"].fillna("").astype(str).str.strip()
-    all_cids = all_cids[all_cids != ""]
+    # Duplicate (across all accounts, not just fitted)
+    all_cids = cid_map[cid_map != ""]
     dup_cids = set(all_cids[all_cids.duplicated(keep=False)].values)
-
     duplicate_mask = constituent_ids.isin(dup_cids) & ~missing_mask
-    duplicate_count = duplicate_mask.sum()
 
-    # Combined exclusion
     excluded_mask = missing_mask | duplicate_mask
     clean_df = codes_df[~excluded_mask].copy()
     excluded_df = codes_df[excluded_mask].copy()
 
-    # Tag exclusion reason
-    excluded_df["exclusion_reason"] = ""
-    excluded_df.loc[missing_mask[excluded_mask.index[excluded_mask]], "exclusion_reason"] = "missing_constituent_id"
-    # Fix: use the original index alignment
-    for idx in excluded_df.index:
-        if missing_mask.loc[idx]:
-            excluded_df.at[idx, "exclusion_reason"] = "missing_constituent_id"
-        elif duplicate_mask.loc[idx]:
-            excluded_df.at[idx, "exclusion_reason"] = "duplicate_constituent_id"
+    # Tag exclusion reason vectorized — reindex masks to excluded_df's index
+    if len(excluded_df) > 0:
+        excluded_missing = missing_mask.reindex(excluded_df.index).fillna(False)
+        excluded_df["exclusion_reason"] = np.where(
+            excluded_missing, "missing_constituent_id", "duplicate_constituent_id"
+        )
+    else:
+        excluded_df["exclusion_reason"] = pd.Series(dtype=str)
 
-    # Build exceptions CSV DataFrame
-    exception_rows = []
-    for idx, row in excluded_df.iterrows():
-        aid = row["account_id"]
-        cid = _get_acct_field(accts, aid, "Constituent_Id__c", default="")
-        exception_rows.append({
-            "AccountId": aid,
-            "AccountName": _get_acct_field(accts, aid, "Name"),
-            "Constituent_Id__c": cid,
-            "ExclusionReason": row["exclusion_reason"],
-            "SegmentCode": row.get("segment_code", ""),
-            "AskAmount1": row.get("ask1", ""),
-            "AskAmount2": row.get("ask2", ""),
-            "AskAmount3": row.get("ask3", ""),
-        })
-    exceptions_df = pd.DataFrame(exception_rows)
+    # Exceptions CSV via merge (no per-row loop)
+    if len(excluded_df) > 0:
+        exc = excluded_df[["account_id", "exclusion_reason", "segment_code"]].copy()
+        exc = exc.rename(columns={"account_id": "AccountId", "exclusion_reason": "ExclusionReason", "segment_code": "SegmentCode"})
+        exc["AccountName"] = exc["AccountId"].map(accts.get("Name", pd.Series(dtype=str)))
+        exc["Constituent_Id__c"] = exc["AccountId"].map(cid_map)
+        exceptions_df = exc[["AccountId", "AccountName", "Constituent_Id__c", "ExclusionReason", "SegmentCode"]]
+    else:
+        exceptions_df = pd.DataFrame(columns=["AccountId", "AccountName", "Constituent_Id__c", "ExclusionReason", "SegmentCode"])
 
+    missing_count = missing_mask.sum()
+    duplicate_count = duplicate_mask.sum()
     logger.info(f"  Constituent_Id filter: {len(codes_df):,} total → "
                 f"{len(clean_df):,} clean, {len(excluded_df):,} excluded "
                 f"({missing_count:,} missing ID, {duplicate_count:,} duplicate ID)")
@@ -149,173 +125,140 @@ def apply_constituent_id_filter(
 
 
 def generate_output_files(
-    waterfall_result: pd.DataFrame,
-    accounts_df: pd.DataFrame,
-    ask_df: pd.DataFrame,
-    reply_tiers: pd.Series,
-    codes_df: pd.DataFrame,
-    campaign_code: str = "DIAG",
-    lane: str = "Housefile",
-    holdout_pct: float = 0.0,
-    holdout_seed: int = 42,
-) -> dict:
-    """Generate Printer File, Matchback File, Housefile Suppression File, and Exceptions File.
+    waterfall_result,
+    accounts_df,
+    ask_df,
+    reply_tiers,
+    codes_df,
+    campaign_code="DIAG",
+    lane="Housefile",
+    holdout_pct=0.0,
+    holdout_seed=42,
+):
+    """Generate all output files via vectorized pandas operations.
 
-    Returns dict with CSV strings, counts, DataFrames, and warnings.
+    No per-row iteration. All joins via merge/map.
     """
+    import time
+    t0 = time.time()
+
     accts = accounts_df.copy()
     if "Id" in accts.columns:
         accts = accts.set_index("Id")
 
-    # --- Data quality filter: missing/duplicate Constituent_Id ---
+    # --- DQ filter ---
     clean_codes, excluded_codes, exceptions_df = apply_constituent_id_filter(codes_df, accounts_df)
 
-    # Apply holdout on clean records only
+    # --- Holdout ---
     holdout_ids = set()
     if holdout_pct > 0 and len(clean_codes) > 0:
         n_holdout = max(1, int(len(clean_codes) * holdout_pct / 100))
         random.seed(holdout_seed)
         holdout_ids = set(random.sample(list(clean_codes["account_id"]), min(n_holdout, len(clean_codes))))
-        logger.info(f"  Holdout: {len(holdout_ids):,} donors ({holdout_pct}% of {len(clean_codes):,})")
+        logger.info(f"  Holdout: {len(holdout_ids):,} donors ({holdout_pct}%)")
 
-    # Index ask_df and reply_tiers for fast lookup
-    ask_lookup = {}
+    # --- Build the master DataFrame via merges ---
+    # Start with codes_df (has account_id, appeal codes, scanline, segment, package, etc.)
+    all_codes = pd.concat([clean_codes, excluded_codes], ignore_index=True)
+
+    # Tag holdout and exclusion
+    all_codes["Holdout"] = all_codes["account_id"].isin(holdout_ids)
+    if "exclusion_reason" not in all_codes.columns:
+        all_codes["exclusion_reason"] = ""
+    all_codes["exclusion_reason"] = all_codes["exclusion_reason"].fillna("")
+    all_codes["_is_excluded"] = all_codes["exclusion_reason"] != ""
+
+    # Merge account fields
+    acct_fields = accts[[
+        "npo02__Formal_Greeting__c", "Special_Salutation__c",
+        "First_Name__c", "Last_Name__c",
+        "BillingStreet", "BillingCity", "BillingState", "BillingPostalCode", "BillingCountry",
+        "npo02__LastOppAmount__c", "npo02__LastCloseDate__c",
+        "Total_Gifts_This_Fiscal_Year__c", "Total_Gifts_Last_Fiscal_Year__c",
+        "npo02__TotalOppAmount__c",
+        "Cornerstone_Partner__c", "General_Email__c", "Miracle_Partner__c",
+        "Gifts_in_L12M__c",
+    ]].copy()
+    master = all_codes.merge(acct_fields, left_on="account_id", right_index=True, how="left")
+
+    # Merge ask strings
     if len(ask_df) > 0:
-        for _, row in ask_df.iterrows():
-            ask_lookup[row["account_id"]] = row
-    reply_lookup = reply_tiers.to_dict() if isinstance(reply_tiers, pd.Series) else {}
+        ask_cols = ask_df[["account_id", "ask1", "ask2", "ask3", "ask_label"]].copy()
+        master = master.merge(ask_cols, on="account_id", how="left")
+    else:
+        master["ask1"] = ""
+        master["ask2"] = ""
+        master["ask3"] = ""
+        master["ask_label"] = ""
 
+    # Merge reply tiers
+    if isinstance(reply_tiers, pd.Series):
+        rt_df = reply_tiers.reset_index()
+        rt_df.columns = ["account_id", "ReplyCopyTier"]
+        master = master.merge(rt_df, on="account_id", how="left")
+    else:
+        master["ReplyCopyTier"] = ""
+
+    # Merge waterfall fields (lifecycle, RFM)
+    wf_cols = waterfall_result[["account_id", "lifecycle_stage", "RFM_code"]].drop_duplicates("account_id")
+    master = master.merge(wf_cols, on="account_id", how="left")
+
+    # --- Vectorized field transforms ---
+    master["Addressee"] = master["npo02__Formal_Greeting__c"].fillna("")
+    master["Salutation"] = _fix_salutation(
+        master["Special_Salutation__c"], master["Last_Name__c"]
+    )
+    master["FirstName"] = master["First_Name__c"].fillna("")
+    master["LastName"] = master["Last_Name__c"].fillna("")
+    master["Address1"], master["Address2"] = _split_street(master["BillingStreet"])
+    master["City"] = master["BillingCity"].fillna("")
+    master["State"] = master["BillingState"].fillna("")
+    master["ZIP"] = _format_zip_series(master["BillingPostalCode"])
+    master["Country"] = master["BillingCountry"].fillna("")
+
+    # Rename code columns
+    master["DonorID"] = master.get("donor_id_9", "")
+    master["CampaignAppealCode"] = master.get("appeal_code_9", "")
+    master["Scanline"] = master.get("scanline", "")
+    master["PackageCode"] = master.get("package_code", "")
+    master["InternalAppealCode"] = master.get("appeal_code_15", "")
+    master["SegmentCode"] = master.get("segment_code", "")
+    master["SegmentName"] = master.get("segment_code", "")  # same as code for now
+    master["TestFlag"] = master.get("test_flag", "")
+    master["CAVersion"] = master.get("ca_version", False)
+    master["AskAmount1"] = master["ask1"]
+    master["AskAmount2"] = master["ask2"]
+    master["AskAmount3"] = master["ask3"]
+    master["AskAmountLabel"] = master["ask_label"]
+    master["LastGiftAmount"] = master["npo02__LastOppAmount__c"]
+    master["LastGiftDate"] = master["npo02__LastCloseDate__c"]
+    master["CurrentFYGiving"] = master["Total_Gifts_This_Fiscal_Year__c"]
+    master["PriorFYGiving"] = master["Total_Gifts_Last_Fiscal_Year__c"]
+    master["CumulativeGiving"] = master["npo02__TotalOppAmount__c"]
+    master["LifecycleStage"] = master["lifecycle_stage"].fillna("")
+    master["CornerstoneFlag"] = master["Cornerstone_Partner__c"]
+    master["Email"] = master["General_Email__c"].fillna("")
+    master["SustainerFlag"] = master["Miracle_Partner__c"]
+    master["GiftCount12Mo"] = master["Gifts_in_L12M__c"]
+    master["RFMScore"] = master["RFM_code"].fillna("")
+    master["ExclusionReason"] = master["exclusion_reason"]
+    master["ReplyCopyTier"] = master["ReplyCopyTier"].fillna("")
+
+    logger.info(f"  Master DataFrame built: {len(master):,} rows in {time.time() - t0:.1f}s")
+
+    # --- Printer File: clean, non-holdout records only ---
+    printer_mask = (~master["_is_excluded"]) & (~master["Holdout"])
+    printer_df = master.loc[printer_mask, PRINTER_COLUMNS].copy()
+
+    # --- Matchback File: all records ---
+    matchback_df = master[MATCHBACK_COLUMNS].copy()
+
+    # --- Validations ---
     warnings = []
-
-    def _build_record(code_row, include_internal=False, exclusion_reason="", holdout=False):
-        """Build a single output record from a codes_df row."""
-        acct_id = code_row["account_id"]
-        donor_id = code_row.get("donor_id_9", "")
-        appeal_9 = code_row.get("appeal_code_9", "")
-        appeal_15 = code_row.get("appeal_code_15", "")
-        scanline = code_row.get("scanline", "")
-        package = code_row.get("package_code", "")
-        test_flag = code_row.get("test_flag", "")
-        ca_version = code_row.get("ca_version", "")
-        seg_code = code_row.get("segment_code", "")
-
-        addressee = str(_get_acct_field(accts, acct_id, "npo02__Formal_Greeting__c"))
-        salutation = str(_get_acct_field(accts, acct_id, "Special_Salutation__c"))
-        first_name = str(_get_acct_field(accts, acct_id, "First_Name__c"))
-        last_name = str(_get_acct_field(accts, acct_id, "Last_Name__c"))
-
-        if salutation and last_name and len(salutation.split()) == 1:
-            salutation = f"{salutation} {last_name}"
-
-        street = str(_get_acct_field(accts, acct_id, "BillingStreet"))
-        city = str(_get_acct_field(accts, acct_id, "BillingCity"))
-        state = str(_get_acct_field(accts, acct_id, "BillingState"))
-        zip_code = _format_zip(_get_acct_field(accts, acct_id, "BillingPostalCode"))
-        country = str(_get_acct_field(accts, acct_id, "BillingCountry"))
-
-        addr_lines = street.split("\n") if street else [""]
-        address1 = addr_lines[0].strip() if len(addr_lines) > 0 else ""
-        address2 = addr_lines[1].strip() if len(addr_lines) > 1 else ""
-
-        ask_row = ask_lookup.get(acct_id, {})
-        ask1 = ask_row.get("ask1", "") if isinstance(ask_row, dict) else getattr(ask_row, "ask1", "")
-        ask2 = ask_row.get("ask2", "") if isinstance(ask_row, dict) else getattr(ask_row, "ask2", "")
-        ask3 = ask_row.get("ask3", "") if isinstance(ask_row, dict) else getattr(ask_row, "ask3", "")
-        ask_label = ask_row.get("ask_label", "") if isinstance(ask_row, dict) else getattr(ask_row, "ask_label", "")
-
-        reply_tier = reply_lookup.get(acct_id, "")
-
-        last_gift_amt = _get_acct_field(accts, acct_id, "npo02__LastOppAmount__c")
-        last_gift_date = _get_acct_field(accts, acct_id, "npo02__LastCloseDate__c")
-        current_fy = _get_acct_field(accts, acct_id, "Total_Gifts_This_Fiscal_Year__c")
-        prior_fy = _get_acct_field(accts, acct_id, "Total_Gifts_Last_Fiscal_Year__c")
-        cumulative = _get_acct_field(accts, acct_id, "npo02__TotalOppAmount__c")
-
-        wf_row = waterfall_result[waterfall_result["account_id"] == acct_id]
-        lifecycle = wf_row["lifecycle_stage"].iloc[0] if len(wf_row) > 0 else ""
-        rfm_code = wf_row["RFM_code"].iloc[0] if len(wf_row) > 0 else ""
-
-        base = {
-            "DonorID": donor_id,
-            "CampaignAppealCode": appeal_9,
-            "Scanline": scanline,
-            "PackageCode": package,
-            "Addressee": addressee,
-            "Salutation": salutation,
-            "FirstName": first_name,
-            "LastName": last_name,
-            "Address1": address1,
-            "Address2": address2,
-            "City": city,
-            "State": state,
-            "ZIP": zip_code,
-            "Country": country,
-            "AskAmount1": ask1,
-            "AskAmount2": ask2,
-            "AskAmount3": ask3,
-            "AskAmountLabel": ask_label,
-            "ReplyCopyTier": reply_tier,
-            "LastGiftAmount": last_gift_amt,
-            "LastGiftDate": last_gift_date,
-            "CurrentFYGiving": current_fy,
-            "PriorFYGiving": prior_fy,
-            "CAVersion": ca_version,
-        }
-
-        if include_internal:
-            base.update({
-                "InternalAppealCode": appeal_15,
-                "SegmentCode": seg_code,
-                "SegmentName": code_row.get("segment_code", ""),
-                "TestFlag": test_flag,
-                "CumulativeGiving": cumulative,
-                "LifecycleStage": lifecycle,
-                "CornerstoneFlag": _get_acct_field(accts, acct_id, "Cornerstone_Partner__c"),
-                "Email": _get_acct_field(accts, acct_id, "General_Email__c"),
-                "SustainerFlag": _get_acct_field(accts, acct_id, "Miracle_Partner__c"),
-                "GiftCount12Mo": _get_acct_field(accts, acct_id, "Gifts_in_L12M__c"),
-                "RFMScore": rfm_code,
-                "Holdout": holdout,
-                "ExclusionReason": exclusion_reason,
-            })
-
-        return base
-
-    # --- Build Printer File (clean records only, minus holdout) ---
-    printer_rows = []
-    for _, code_row in clean_codes.iterrows():
-        if code_row["account_id"] in holdout_ids:
-            continue
-        printer_rows.append(_build_record(code_row, include_internal=False))
-
-    # --- Build Matchback File (ALL records: clean + excluded, with exclusion_reason) ---
-    matchback_rows = []
-    # Clean records (with holdout flag)
-    for _, code_row in clean_codes.iterrows():
-        is_holdout = code_row["account_id"] in holdout_ids
-        matchback_rows.append(_build_record(
-            code_row, include_internal=True, exclusion_reason="", holdout=is_holdout
-        ))
-    # Excluded records (with reason, not holdout)
-    for _, code_row in excluded_codes.iterrows():
-        reason = code_row.get("exclusion_reason", "unknown")
-        matchback_rows.append(_build_record(
-            code_row, include_internal=True, exclusion_reason=reason, holdout=False
-        ))
-
-    printer_df = pd.DataFrame(printer_rows, columns=PRINTER_COLUMNS)
-    matchback_df = pd.DataFrame(matchback_rows, columns=MATCHBACK_COLUMNS)
-
-    # Validate: 15-char code must NOT appear in Printer File
     if "InternalAppealCode" in printer_df.columns:
         warnings.append("FAIL: InternalAppealCode found in Printer File")
-    # Validate: ZIP preservation
     if len(printer_df) > 0:
-        bad_zips = printer_df[
-            (printer_df["ZIP"] != "")
-            & (printer_df["ZIP"].str.len() < 5)
-            & (printer_df["ZIP"].str.len() > 0)
-        ]
+        bad_zips = printer_df[(printer_df["ZIP"] != "") & (printer_df["ZIP"].str.len() < 5)]
         if len(bad_zips) > 0:
             warnings.append(f"WARNING: {len(bad_zips)} ZIPs shorter than 5 chars")
 
@@ -323,39 +266,35 @@ def generate_output_files(
     matchback_csv = matchback_df.to_csv(index=False)
     exceptions_csv = exceptions_df.to_csv(index=False) if len(exceptions_df) > 0 else ""
 
-    logger.info(f"  Printer File: {len(printer_df):,} rows, {len(PRINTER_COLUMNS)} columns")
-    logger.info(f"  Matchback File: {len(matchback_df):,} rows "
-                f"({len(clean_codes):,} clean + {len(excluded_codes):,} excluded)")
-    logger.info(f"  Holdout: {len(holdout_ids):,} donors excluded from Printer File")
-    if len(excluded_codes) > 0:
-        missing = (excluded_codes["exclusion_reason"] == "missing_constituent_id").sum()
-        dupes = (excluded_codes["exclusion_reason"] == "duplicate_constituent_id").sum()
-        logger.info(f"  Exceptions: {len(excluded_codes):,} excluded "
-                    f"({missing:,} missing ID, {dupes:,} duplicate ID)")
+    logger.info(f"  Printer File: {len(printer_df):,} rows")
+    logger.info(f"  Matchback File: {len(matchback_df):,} rows")
+    logger.info(f"  Holdout: {len(holdout_ids):,} excluded from Printer")
 
-    # --- Housefile Suppression File ---
+    excluded_count = len(excluded_codes)
+    excluded_missing = int((excluded_codes.get("exclusion_reason", pd.Series()) == "missing_constituent_id").sum()) if excluded_count > 0 else 0
+    excluded_duplicate = int((excluded_codes.get("exclusion_reason", pd.Series()) == "duplicate_constituent_id").sum()) if excluded_count > 0 else 0
+    if excluded_count > 0:
+        logger.info(f"  Exceptions: {excluded_count:,} ({excluded_missing:,} missing, {excluded_duplicate:,} duplicate)")
+
+    # --- Housefile Suppression File (vectorized) ---
     all_assigned = waterfall_result[
-        (waterfall_result["segment_code"] != "")
-        & (waterfall_result["suppression_reason"] == "")
+        (waterfall_result["segment_code"] != "") & (waterfall_result["suppression_reason"] == "")
     ]
-    supp_rows = []
-    for _, row in all_assigned.iterrows():
-        aid = row["account_id"]
-        donor_id = str(_get_acct_field(accts, aid, "Constituent_Id__c")).strip()
-        if donor_id and donor_id != "" and donor_id != "nan":
-            donor_id = donor_id.zfill(9)[:9]
-        supp_rows.append({
-            "DonorID": donor_id,
-            "Name": _get_acct_field(accts, aid, "Name"),
-            "Address1": str(_get_acct_field(accts, aid, "BillingStreet")).split("\n")[0].strip(),
-            "City": _get_acct_field(accts, aid, "BillingCity"),
-            "State": _get_acct_field(accts, aid, "BillingState"),
-            "ZIP": _format_zip(_get_acct_field(accts, aid, "BillingPostalCode")),
-        })
-
-    supp_df = pd.DataFrame(supp_rows)
+    supp_aids = all_assigned["account_id"].reset_index(drop=True)
+    cid_series = accts["Constituent_Id__c"] if "Constituent_Id__c" in accts.columns else pd.Series(dtype=str)
+    supp_df = pd.DataFrame({
+        "DonorID": supp_aids.map(cid_series).fillna("").astype(str).str.strip().str.zfill(9).str[:9],
+        "Name": supp_aids.map(accts["Name"] if "Name" in accts.columns else pd.Series(dtype=str)).fillna(""),
+        "Address1": supp_aids.map(accts["BillingStreet"] if "BillingStreet" in accts.columns else pd.Series(dtype=str)).fillna("").astype(str).str.split('\n').str[0].str.strip(),
+        "City": supp_aids.map(accts["BillingCity"] if "BillingCity" in accts.columns else pd.Series(dtype=str)).fillna(""),
+        "State": supp_aids.map(accts["BillingState"] if "BillingState" in accts.columns else pd.Series(dtype=str)).fillna(""),
+        "ZIP": _format_zip_series(supp_aids.map(accts["BillingPostalCode"] if "BillingPostalCode" in accts.columns else pd.Series(dtype=str))),
+    })
     suppression_csv = supp_df.to_csv(index=False)
-    logger.info(f"  Housefile Suppression File: {len(supp_df):,} rows")
+    logger.info(f"  Housefile Suppression: {len(supp_df):,} rows")
+
+    total_time = time.time() - t0
+    logger.info(f"  Output generation total: {total_time:.1f}s")
 
     return {
         "printer_csv": printer_csv,
@@ -366,9 +305,9 @@ def generate_output_files(
         "matchback_count": len(matchback_df),
         "suppression_count": len(supp_df),
         "holdout_count": len(holdout_ids),
-        "excluded_count": len(excluded_codes),
-        "excluded_missing": int((excluded_codes["exclusion_reason"] == "missing_constituent_id").sum()) if len(excluded_codes) > 0 else 0,
-        "excluded_duplicate": int((excluded_codes["exclusion_reason"] == "duplicate_constituent_id").sum()) if len(excluded_codes) > 0 else 0,
+        "excluded_count": excluded_count,
+        "excluded_missing": excluded_missing,
+        "excluded_duplicate": excluded_duplicate,
         "warnings": warnings,
         "printer_df": printer_df,
         "matchback_df": matchback_df,

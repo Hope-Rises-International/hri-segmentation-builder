@@ -1,6 +1,8 @@
 """BigQuery cache reader for the segmentation pipeline.
 
-Reads from sf_cache.accounts and sf_cache.opportunities instead of live SF.
+Reads from sf_cache.accounts (with pre-computed is_cbnc and has_dm_gift_500 flags).
+No opportunity data needed at pipeline runtime — flags are pre-computed nightly.
+
 Includes staleness check and fallback to live SF queries.
 """
 
@@ -12,13 +14,12 @@ from datetime import datetime, timedelta
 from google.cloud import bigquery
 import pandas as pd
 
-from config import GCP_PROJECT, OPPORTUNITY_EARLIEST_DATE
+from config import GCP_PROJECT
 
 logger = logging.getLogger(__name__)
 
 BQ_DATASET = "sf_cache"
 BQ_ACCOUNTS_TABLE = f"{GCP_PROJECT}.{BQ_DATASET}.accounts"
-BQ_OPPORTUNITIES_TABLE = f"{GCP_PROJECT}.{BQ_DATASET}.opportunities"
 
 STALENESS_THRESHOLD_HOURS = 36
 
@@ -51,43 +52,20 @@ def check_cache_freshness():
 
 
 def fetch_accounts_from_bq():
-    """Read accounts from BQ cache. Returns DataFrame matching SF query output."""
+    """Read accounts from BQ cache (includes pre-computed is_cbnc and has_dm_gift_500).
+
+    Returns DataFrame matching SF query output plus two flag columns.
+    Uses to_dataframe() with pinned pyarrow==14.0.2 and db-dtypes==1.2.0 for Python 3.9.
+    """
     client = bigquery.Client(project=GCP_PROJECT)
     t0 = time.time()
 
     query = f"SELECT * EXCEPT(_load_timestamp) FROM `{BQ_ACCOUNTS_TABLE}`"
-    df = client.query(query).to_dataframe()
+    df = client.query(query).to_dataframe(create_bqstorage_client=False)
 
     elapsed = round(time.time() - t0, 1)
-    logger.info(f"  BQ accounts: {len(df):,} rows in {elapsed}s")
-    return df
-
-
-def fetch_opportunities_from_bq():
-    """Read opportunities (5-year window) from BQ cache."""
-    client = bigquery.Client(project=GCP_PROJECT)
-    t0 = time.time()
-
-    query = f"""
-    SELECT * EXCEPT(_load_timestamp)
-    FROM `{BQ_OPPORTUNITIES_TABLE}`
-    WHERE CloseDate >= '{OPPORTUNITY_EARLIEST_DATE}'
-    """
-    df = client.query(query).to_dataframe()
-
-    elapsed = round(time.time() - t0, 1)
-    logger.info(f"  BQ opportunities (5yr): {len(df):,} rows in {elapsed}s")
-    return df
-
-
-def fetch_opportunities_cbnc_from_bq():
-    """Read all opportunities (10-year window) from BQ cache for CBNC detection."""
-    client = bigquery.Client(project=GCP_PROJECT)
-    t0 = time.time()
-
-    query = f"SELECT * EXCEPT(_load_timestamp) FROM `{BQ_OPPORTUNITIES_TABLE}`"
-    df = client.query(query).to_dataframe()
-
-    elapsed = round(time.time() - t0, 1)
-    logger.info(f"  BQ opportunities (10yr CBNC): {len(df):,} rows in {elapsed}s")
+    cbnc_count = df["is_cbnc"].sum() if "is_cbnc" in df.columns else 0
+    dm500_count = df["has_dm_gift_500"].sum() if "has_dm_gift_500" in df.columns else 0
+    logger.info(f"  BQ accounts: {len(df):,} rows in {elapsed}s "
+                f"(is_cbnc={cbnc_count:,}, has_dm_gift_500={dm500_count:,})")
     return df

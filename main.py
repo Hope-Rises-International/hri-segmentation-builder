@@ -49,9 +49,12 @@ def run_sf_extract(request):
         return {
             "status": "success",
             "duration_seconds": round(duration, 1),
-            "accounts": result["accounts"],
-            "opportunities": result["opportunities"],
-            "timings": result["timings"],
+            "accounts_raw": result.get("accounts_raw", 0),
+            "accounts_final": result.get("accounts_final", 0),
+            "opportunities_raw": result.get("opportunities_raw", 0),
+            "is_cbnc_count": result.get("is_cbnc_count", 0),
+            "has_dm_gift_500_count": result.get("has_dm_gift_500_count", 0),
+            "timings": result.get("timings", {}),
         }, 200
     except Exception as e:
         duration = time.time() - start

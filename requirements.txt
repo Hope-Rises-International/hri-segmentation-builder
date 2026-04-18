@@ -1,9 +1,13 @@
+# BQ cache deps pinned for Python 3.9 compatibility
 functions-framework
 simple-salesforce==1.*
 gspread==6.*
 google-auth==2.*
 google-api-python-client
 google-cloud-secret-manager==2.*
-google-cloud-bigquery==3.*
-google-cloud-storage==2.*
+google-cloud-bigquery==3.13.0
+google-cloud-storage==2.13.0
+numpy==1.26.4
+pyarrow==14.0.2
+db-dtypes==1.2.0
 pandas==2.*

@@ -11,8 +11,6 @@ from salesforce_client import (
 from bq_reader import (
     check_cache_freshness,
     fetch_accounts_from_bq,
-    fetch_opportunities_from_bq,
-    fetch_opportunities_cbnc_from_bq,
 )
 from sheets_client import (
     get_sheets_client, read_campaign_calendar, write_diagnostic,
@@ -96,6 +94,10 @@ def _pick_campaign_from_mic(mic_df: pd.DataFrame):
 def run_diagnostic() -> dict:
     """Execute the full pipeline. Reads from BQ cache when fresh, falls back to live SF."""
     timings = {}
+    pipeline_start = time.time()
+
+    def _elapsed():
+        return round(time.time() - pipeline_start, 1)
 
     logger.info("=" * 60)
     logger.info("SEGMENTATION BUILDER PIPELINE")
@@ -111,6 +113,8 @@ def run_diagnostic() -> dict:
 
     if cache_fresh:
         # --- BQ path: read from cache (fast) ---
+        # accounts table has pre-computed is_cbnc and has_dm_gift_500 flags.
+        # No raw opportunity queries needed.
         data_source = "bigquery"
         logger.info(f"Using BQ cache (age: {cache_age_hours}h)")
 
@@ -118,15 +122,20 @@ def run_diagnostic() -> dict:
         accounts_df = fetch_accounts_from_bq()
         timings["pass1"] = round(time.time() - t0, 1)
 
-        t0 = time.time()
-        opps_df = fetch_opportunities_from_bq()
-        timings["pass2"] = round(time.time() - t0, 1)
+        # BQ path: CBNC IDs come from pre-computed is_cbnc column
+        if "is_cbnc" in accounts_df.columns:
+            cbnc_ids = set(accounts_df.loc[accounts_df["is_cbnc"] == True, "Id"])
+            logger.info(f"  CBNC from BQ flag: {len(cbnc_ids):,} donors")
+        else:
+            cbnc_ids = set()
+            logger.warning("  is_cbnc column missing from BQ cache")
 
-        t0 = time.time()
-        cbnc_opps_df = fetch_opportunities_cbnc_from_bq()
-        timings["pass3"] = round(time.time() - t0, 1)
+        # BQ path: no raw opps needed — RFM uses Account rollup fields only
+        opps_df = pd.DataFrame()
+        timings["pass2"] = 0
+        timings["pass3"] = 0
     else:
-        # --- SF fallback: live queries (slow) ---
+        # --- SF fallback: live queries (slow, ~14 min) ---
         data_source = "salesforce_live"
         logger.info(f"BQ cache stale or missing — falling back to live Salesforce queries")
 
@@ -149,38 +158,44 @@ def run_diagnostic() -> dict:
         cbnc_opps_df = fetch_opportunities_cbnc(sf)
         timings["pass3"] = round(time.time() - t0, 1)
 
-    logger.info(f"Data source: {data_source} | Accounts: {len(accounts_df):,} | "
-                f"Opps 5yr: {len(opps_df):,} | Opps 10yr: {len(cbnc_opps_df):,}")
+        # Compute CBNC from raw opps (SF path)
+        t0 = time.time()
+        cbnc_ids = detect_cbnc(cbnc_opps_df)
+        timings["cbnc"] = round(time.time() - t0, 1)
+        del cbnc_opps_df
 
-    # --- Step 5-7: Compute RFM, lifecycle, CBNC ---
+    logger.info(f"[{_elapsed()}s] Data loaded. Source: {data_source} | Accounts: {len(accounts_df):,} | "
+                f"Opps: {len(opps_df):,} | CBNC donors: {len(cbnc_ids):,}")
+
+    # --- Compute RFM, lifecycle ---
+    logger.info(f"[{_elapsed()}s] Computing RFM...")
     t0 = time.time()
     rfm_df = compute_rfm(accounts_df, opps_df)
     timings["rfm"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] RFM done ({timings['rfm']}s)")
 
+    logger.info(f"[{_elapsed()}s] Computing lifecycle...")
     t0 = time.time()
     lifecycle = compute_lifecycle(accounts_df)
     timings["lifecycle"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Lifecycle done ({timings['lifecycle']}s)")
 
-    t0 = time.time()
-    cbnc_ids = detect_cbnc(cbnc_opps_df)
-    timings["cbnc"] = round(time.time() - t0, 1)
-
-    # --- Step 8: Waterfall assignment ---
-    logger.info("=" * 60)
-    logger.info("PHASE 2: WATERFALL ASSIGNMENT")
-    logger.info("=" * 60)
+    # --- Waterfall assignment ---
+    logger.info(f"[{_elapsed()}s] Running waterfall...")
     t0 = time.time()
     waterfall_result = run_waterfall(accounts_df, rfm_df, lifecycle, cbnc_ids)
     timings["waterfall"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Waterfall done ({timings['waterfall']}s)")
 
     # --- Step 9: Connect to Sheets, read MIC ---
     logger.info("=" * 60)
     logger.info("PHASE 3: SUPPRESSION + BUDGET FITTING")
     logger.info("=" * 60)
 
+    logger.info(f"[{_elapsed()}s] Connecting to Sheets...")
     gc = get_sheets_client()
 
-    logger.info("Reading MIC Campaign Calendar...")
+    logger.info(f"[{_elapsed()}s] Reading MIC Campaign Calendar...")
     try:
         mic_df = read_campaign_calendar(gc)
         mic_status = f"OK — {len(mic_df)} rows"
@@ -203,12 +218,14 @@ def run_diagnostic() -> dict:
         target_qty = 35000
         cpp = 0.48
 
-    # --- Step 10: Tier 2 suppression ---
+    # --- Tier 2 suppression ---
+    logger.info(f"[{_elapsed()}s] Applying Tier 2 suppression...")
     t0 = time.time()
     waterfall_result, tier2_log = apply_tier2_suppression(
         waterfall_result, accounts_df, campaign_type=campaign_type
     )
     timings["tier2"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Tier 2 done ({timings['tier2']}s)")
 
     # --- Step 11: Build segment summary (post-Tier 2) ---
     segment_summary = build_segment_summary(waterfall_result)
@@ -228,16 +245,15 @@ def run_diagnostic() -> dict:
         waterfall_result, target_qty, segment_summary
     )
     timings["budget_fit"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Budget fit done ({timings['budget_fit']}s)")
 
-    # --- Step 14: Phase 4 — Ask Strings + Appeal Codes ---
-    logger.info("=" * 60)
-    logger.info("PHASE 4: ASK STRINGS + APPEAL CODES")
-    logger.info("=" * 60)
-
+    # --- Ask Strings + Appeal Codes ---
+    logger.info(f"[{_elapsed()}s] Computing ask strings...")
     t0 = time.time()
     ask_df = compute_ask_strings(waterfall_result, accounts_df)
     reply_tiers = classify_reply_copy_tier(waterfall_result, accounts_df)
     timings["ask_strings"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Ask strings done ({timings['ask_strings']}s)")
 
     # Appeal codes
     campaign_appeal_code = campaign.get("appeal_code", "") if campaign else ""
@@ -251,6 +267,7 @@ def run_diagnostic() -> dict:
         campaign_appeal_code=campaign_appeal_code,
     )
     timings["appeal_codes"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Appeal codes done ({timings['appeal_codes']}s)")
 
     # Validate
     code_validation = validate_appeal_codes(codes_df)
@@ -272,11 +289,8 @@ def run_diagnostic() -> dict:
                     logger.warning(f"  {col}: {len(bad_high)} values >=$100 not rounded to $25")
         logger.info(f"  Ask rounding validation: {'PASS' if rounding_ok else 'FAIL'}")
 
-    # --- Step 15: Phase 5 — Output Files ---
-    logger.info("=" * 60)
-    logger.info("PHASE 5: OUTPUT FILES + MIC WRITE-BACK")
-    logger.info("=" * 60)
-
+    # --- Output Files ---
+    logger.info(f"[{_elapsed()}s] Generating output files...")
     t0 = time.time()
     output = generate_output_files(
         waterfall_result, accounts_df, ask_df, reply_tiers, codes_df,
@@ -285,6 +299,7 @@ def run_diagnostic() -> dict:
         holdout_pct=5.0,  # 5% holdout per spec
     )
     timings["output_files"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Output files done ({timings['output_files']}s)")
 
     for w in output["warnings"]:
         logger.warning(f"  {w}")
@@ -315,7 +330,9 @@ def run_diagnostic() -> dict:
     audit_log = build_suppression_audit_log(waterfall_result, tier2_log)
     audit_csv = audit_log.to_csv(index=False)
 
-    # --- Step 16: Pipeline Write Recovery (Drive → Sheets → SF) ---
+    # --- Pipeline Write Recovery (Drive → Sheets → SF) ---
+    logger.info(f"[{_elapsed()}s] Writing pipeline outputs (Drive → Sheets)...")
+    t0 = time.time()
     pipeline = PipelineWriteRecovery()
     write_status = pipeline.execute_writes(
         gc,
@@ -328,6 +345,9 @@ def run_diagnostic() -> dict:
         lane=campaign.get("lane", "Housefile") if campaign else "Housefile",
         exceptions_csv=output.get("exceptions_csv", ""),
     )
+
+    timings["pipeline_write"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Pipeline writes done ({timings['pipeline_write']}s)")
 
     drive_urls = write_status.get("drive_urls", {})
     audit_url = drive_urls.get("audit", "N/A")
@@ -390,7 +410,7 @@ def run_diagnostic() -> dict:
         {"Metric": "Run Timestamp", "Value": pd.Timestamp.now().isoformat()},
         {"Metric": "Total Accounts (Pass 1)", "Value": len(accounts_df)},
         {"Metric": "Total Opportunities 5yr (Pass 2)", "Value": len(opps_df)},
-        {"Metric": "Total Opportunities 10yr (Pass 3)", "Value": len(cbnc_opps_df)},
+        {"Metric": "Total Opportunities 10yr (Pass 3)", "Value": "N/A (BQ cache)" if data_source == "bigquery" else len(cbnc_opps_df)},
         {"Metric": "CBNC Donors Detected", "Value": len(cbnc_ids)},
         {"Metric": "Tier 1 Suppressed", "Value": tier1_suppressed},
         {"Metric": "Tier 2 Suppressed", "Value": tier2_suppressed},
@@ -458,9 +478,15 @@ def run_diagnostic() -> dict:
         "Gate_Results": gate_results,
         "Metadata": metadata,
     }
+    logger.info(f"[{_elapsed()}s] Writing diagnostic sheet...")
+    t0 = time.time()
     sheet_url = write_diagnostic(gc, tabs)
+    timings["diagnostic_sheet"] = round(time.time() - t0, 1)
+    logger.info(f"[{_elapsed()}s] Diagnostic sheet done ({timings['diagnostic_sheet']}s)")
 
-    # --- Step 18: Print results ---
+    logger.info(f"[{_elapsed()}s] PIPELINE COMPLETE. Total: {_elapsed()}s")
+
+    # --- Print results ---
     logger.info("=" * 60)
     logger.info("RESULTS")
     logger.info("=" * 60)
