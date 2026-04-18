@@ -115,6 +115,104 @@ function getCampaigns() {
 }
 
 /**
+ * Get available baseline campaigns from Segment Actuals tab.
+ * Returns distinct appeal_code + fy combinations.
+ */
+function getBaselineCampaigns() {
+  const ss = SpreadsheetApp.openById(MIC_SHEET_ID);
+  let ws;
+  try {
+    ws = ss.getSheetByName('Segment Actuals');
+  } catch (e) {
+    return { baselines: [], message: 'Segment Actuals tab not found — Scorecard integration pending' };
+  }
+  if (!ws) return { baselines: [], message: 'Segment Actuals tab not found' };
+
+  const data = ws.getDataRange().getValues();
+  if (data.length <= 1) return { baselines: [], message: 'No baseline data yet' };
+
+  const headers = data[0];
+  const col = {};
+  headers.forEach((h, i) => col[h] = i);
+
+  // Get distinct appeal_code + fy pairs
+  const seen = {};
+  const baselines = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const code = String(row[col['appeal_code']] || '').trim();
+    const fy = String(row[col['fy']] || '').trim();
+    const key = code + '|' + fy;
+    if (!code || seen[key]) continue;
+    seen[key] = true;
+
+    // Look up campaign name from Campaign Calendar
+    const calWs = ss.getSheetByName(TAB_CAMPAIGN_CALENDAR);
+    let name = code;
+    if (calWs) {
+      const calData = calWs.getDataRange().getValues();
+      const calHeaders = calData[0];
+      const calCol = {};
+      calHeaders.forEach((h, j) => calCol[h] = j);
+      for (let j = 1; j < calData.length; j++) {
+        if (String(calData[j][calCol['appeal_code']] || '').trim() === code) {
+          name = String(calData[j][calCol['campaign_name']] || code);
+          break;
+        }
+      }
+    }
+
+    baselines.push({
+      appeal_code: code,
+      fy: fy,
+      label: code + ' ' + name + ' ' + fy,
+    });
+  }
+
+  baselines.sort((a, b) => b.fy.localeCompare(a.fy) || a.appeal_code.localeCompare(b.appeal_code));
+  return { baselines: baselines };
+}
+
+
+/**
+ * Get baseline segment actuals for a specific campaign appeal code.
+ */
+function getBaselineData(appealCode) {
+  const ss = SpreadsheetApp.openById(MIC_SHEET_ID);
+  let ws;
+  try {
+    ws = ss.getSheetByName('Segment Actuals');
+  } catch (e) {
+    return { error: 'Segment Actuals tab not found' };
+  }
+  if (!ws) return { error: 'Segment Actuals tab not found' };
+
+  const data = ws.getDataRange().getValues();
+  if (data.length <= 1) return { segments: [] };
+
+  const headers = data[0];
+  const col = {};
+  headers.forEach((h, i) => col[h] = i);
+
+  const segments = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (String(row[col['appeal_code']] || '').trim() !== appealCode) continue;
+    segments.push({
+      source_code: String(row[col['source_code']] || ''),
+      segment_description: String(row[col['segment_description']] || ''),
+      response_rate: Number(row[col['response_rate']] || 0),
+      avg_gift: Number(row[col['avg_gift']] || 0),
+      contacts: Number(row[col['contacts']] || 0),
+      revenue: Number(row[col['revenue']] || 0),
+      cost: Number(row[col['cost']] || 0),
+    });
+  }
+  return { segments: segments };
+}
+
+
+/**
  * Get current Draft tab contents (segment summary).
  */
 function getDraftData() {

@@ -241,6 +241,17 @@
       <option value="">Loading campaigns...</option>
     </select>
     <div id="campaign-info" class="campaign-info hidden"></div>
+    <div id="baseline-section" class="hidden" style="margin-top:16px">
+      <label style="font-size:12px;color:var(--hri-muted);display:block;margin-bottom:4px">
+        Compare to baseline campaign (optional)
+      </label>
+      <select id="baseline-select" style="max-width:500px">
+        <option value="">No baseline — economics columns will show "No baseline"</option>
+      </select>
+      <div style="font-size:11px;color:var(--hri-muted);margin-top:4px">
+        Populates Hist. Response Rate and Hist. Avg Gift from prior campaign actuals
+      </div>
+    </div>
     <div id="campaign-msg"></div>
   </div>
 
@@ -433,28 +444,56 @@
       infoItem('Status', '<span class="status-badge status-' + (c.status || 'Draft') + '">' + (c.status || 'Draft') + '</span>');
     show('campaign-info');
 
+    // Show baseline selector and load options
+    show('baseline-section');
+    loadBaselineCampaigns();
+
     // Show appropriate steps based on status
     show('step-toggles');
     show('step-project');
 
     var status = c.status || 'Draft';
+
+    // Steps 4-6 visible after any projection exists
     if (['Projected', 'Approved', 'Pulled', 'Mailed'].includes(status)) {
       show('step-approve');
+      show('step-files');
+      loadFiles();
+      show('step-actuals');
       if (status === 'Approved') {
         document.getElementById('btn-unlock').style.display = '';
       } else {
         document.getElementById('btn-unlock').style.display = 'none';
       }
     }
-    if (['Approved', 'Pulled', 'Mailed'].includes(status)) {
-      show('step-files');
-      loadFiles();
-    }
-    if (['Pulled', 'Mailed'].includes(status)) {
-      show('step-actuals');
-    }
 
     refreshDraft();
+  }
+
+  // --- Baseline Campaigns ---
+  function loadBaselineCampaigns() {
+    if (typeof google === 'undefined') return;
+    google.script.run
+      .withSuccessHandler(function(result) {
+        var sel = document.getElementById('baseline-select');
+        sel.innerHTML = '<option value="">No baseline — economics columns will show "No baseline"</option>';
+        if (result.baselines && result.baselines.length > 0) {
+          result.baselines.forEach(function(b) {
+            var opt = document.createElement('option');
+            opt.value = b.appeal_code;
+            opt.text = b.label;
+            sel.appendChild(opt);
+          });
+        }
+        if (result.message) {
+          var opt = document.createElement('option');
+          opt.value = '';
+          opt.text = '— ' + result.message + ' —';
+          opt.disabled = true;
+          sel.appendChild(opt);
+        }
+      })
+      .getBaselineCampaigns();
   }
 
   // --- Toggles ---
@@ -509,6 +548,7 @@
       budget_qty_mailed: selectedCampaign.budget_qty_mailed,
       budget_cost: selectedCampaign.budget_cost,
       campaign_type: selectedCampaign.campaign_type,
+      baseline_appeal_code: document.getElementById('baseline-select').value || '',
       toggles: getToggles(),
     };
 
@@ -525,9 +565,14 @@
         } else if (result.status === 'running') {
           showMsg('projection-msg', 'info', result.message);
           show('step-approve');
+          show('step-files');
+          show('step-actuals');
         } else {
           showMsg('projection-msg', 'success', result.message);
           show('step-approve');
+          show('step-files');
+          show('step-actuals');
+          loadFiles();
           refreshDraft();
         }
       })
@@ -574,28 +619,54 @@
 
   function renderDraftTable(segments) {
     var total = 0;
+    var totalCost = 0;
+    var totalRev = 0;
     var html = '<h3>Draft Tab Preview</h3><table class="seg-table"><thead><tr>' +
       '<th>Segment</th><th>Name</th><th class="num">Qty</th>' +
-      '<th class="num">Budget Fit</th><th>Status</th></tr></thead><tbody>';
+      '<th class="num">Budget Fit</th>' +
+      '<th class="num">CPP</th><th class="num">Total Cost</th>' +
+      '<th class="num">Hist RR</th><th class="num">Hist AvgGift</th>' +
+      '<th class="num">Proj Rev</th><th class="num">Net Rev</th>' +
+      '<th>Status</th></tr></thead><tbody>';
 
     segments.forEach(function(s) {
       var qty = Number(s['Quantity'] || 0);
-      var fit = s['Budget Fit'] || qty;
+      var fit = Number(s['Budget Fit'] || qty);
       var status = s['Status'] || 'Include';
       var statusClass = 'status-include';
       if (status.includes('Below')) statusClass = 'status-below';
       else if (status.includes('Trim')) statusClass = 'status-trim';
-      if (!status.includes('Below Budget Line')) total += Number(fit);
+      if (!status.includes('Below Budget Line')) total += fit;
+
+      var cpp = s['CPP'] || '';
+      var cost = s['Total Cost'] || '';
+      var rr = s['Hist. Response Rate'] || '';
+      var avg = s['Hist. Avg Gift'] || '';
+      var rev = s['Proj. Gross Revenue'] || '';
+      var net = s['Proj. Net Revenue'] || '';
+      if (cost && !isNaN(Number(cost))) totalCost += Number(cost);
+      if (rev && !isNaN(Number(rev))) totalRev += Number(rev);
 
       html += '<tr><td>' + (s['Segment Code'] || '') + '</td>' +
         '<td>' + (s['Segment Name'] || '') + '</td>' +
         '<td class="num">' + fmt(qty) + '</td>' +
         '<td class="num">' + fmt(fit) + '</td>' +
+        '<td class="num">' + (cpp ? '$' + Number(cpp).toFixed(2) : '') + '</td>' +
+        '<td class="num">' + (cost ? '$' + fmt(Math.round(Number(cost))) : '') + '</td>' +
+        '<td class="num">' + rr + '</td>' +
+        '<td class="num">' + (avg ? '$' + Number(avg).toFixed(0) : '') + '</td>' +
+        '<td class="num">' + (rev ? '$' + fmt(Math.round(Number(rev))) : '') + '</td>' +
+        '<td class="num">' + (net ? '$' + fmt(Math.round(Number(net))) : '') + '</td>' +
         '<td class="' + statusClass + '">' + status + '</td></tr>';
     });
 
     html += '</tbody><tfoot><tr><td colspan="2"><strong>Total Mailable</strong></td>' +
-      '<td></td><td class="num"><strong>' + fmt(total) + '</strong></td><td></td></tr></tfoot></table>';
+      '<td></td><td class="num"><strong>' + fmt(total) + '</strong></td>' +
+      '<td></td><td class="num"><strong>$' + fmt(Math.round(totalCost)) + '</strong></td>' +
+      '<td colspan="2"></td>' +
+      '<td class="num"><strong>$' + fmt(Math.round(totalRev)) + '</strong></td>' +
+      '<td class="num"><strong>$' + fmt(Math.round(totalRev - totalCost)) + '</strong></td>' +
+      '<td></td></tr></tfoot></table>';
 
     document.getElementById('draft-preview').innerHTML = html;
   }

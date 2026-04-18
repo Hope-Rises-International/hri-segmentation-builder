@@ -252,6 +252,17 @@ def run_diagnostic(toggles=None) -> dict:
     timings["budget_fit"] = round(time.time() - t0, 1)
     logger.info(f"[{_elapsed()}s] Budget fit done ({timings['budget_fit']}s)")
 
+    # --- Populate economics columns (CPP + Total Cost always; baseline-dependent cols when available) ---
+    fit_col = "Budget Fit" if "Budget Fit" in segment_summary.columns else "Quantity"
+    segment_summary["CPP"] = cpp
+    segment_summary["Total Cost"] = segment_summary[fit_col].apply(
+        lambda q: round(float(q) * cpp, 2) if q and str(q).replace('.','').isdigit() else ""
+    )
+    # Hist. Response Rate, Hist. Avg Gift, and derived fields remain empty until
+    # baseline data flows from the MIC Segment Actuals tab (Scorecard integration).
+    # The UI shows "No baseline" for these columns when empty.
+    logger.info(f"[{_elapsed()}s] Economics columns populated (CPP=${cpp:.2f})")
+
     # --- Ask Strings + Appeal Codes ---
     logger.info(f"[{_elapsed()}s] Computing ask strings...")
     t0 = time.time()
