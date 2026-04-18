@@ -91,12 +91,14 @@ def _pick_campaign_from_mic(mic_df: pd.DataFrame):
     }
 
 
-def run_diagnostic(toggles=None) -> dict:
+def run_diagnostic(toggles=None, baseline_appeal_code=None) -> dict:
     """Execute the full pipeline. Reads from BQ cache when fresh, falls back to live SF.
 
     Args:
         toggles: Optional dict of waterfall/suppression toggle overrides from the UI.
                  If None, uses DEFAULT_TOGGLES.
+        baseline_appeal_code: Optional appeal code of a prior campaign to use as
+                              performance baseline for economics columns.
     """
     timings = {}
     pipeline_start = time.time()
@@ -258,9 +260,14 @@ def run_diagnostic(toggles=None) -> dict:
     segment_summary["Total Cost"] = segment_summary[fit_col].apply(
         lambda q: round(float(q) * cpp, 2) if q and str(q).replace('.','').isdigit() else ""
     )
-    # Hist. Response Rate, Hist. Avg Gift, and derived fields remain empty until
-    # baseline data flows from the MIC Segment Actuals tab (Scorecard integration).
-    # The UI shows "No baseline" for these columns when empty.
+    # Apply baseline economics if a baseline campaign was selected
+    if baseline_appeal_code:
+        logger.info(f"[{_elapsed()}s] Applying baseline from {baseline_appeal_code}...")
+        from baseline_rollup import build_baseline_rollup, apply_baseline_to_summary
+        baseline_df = build_baseline_rollup(gc, baseline_appeal_code)
+        segment_summary = apply_baseline_to_summary(segment_summary, baseline_df, cpp)
+    else:
+        logger.info(f"[{_elapsed()}s] No baseline selected — economics history columns empty")
     logger.info(f"[{_elapsed()}s] Economics columns populated (CPP=${cpp:.2f})")
 
     # --- Ask Strings + Appeal Codes ---

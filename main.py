@@ -29,9 +29,12 @@ def run_segmentation_diagnostic(request):
         except Exception:
             pass
         toggles = config.get("toggles", None)
+        baseline_appeal_code = config.get("baseline_appeal_code", None) or None
         if toggles:
             print(f"Received toggles from UI: {toggles}")
-        result = run_diagnostic(toggles=toggles)
+        if baseline_appeal_code:
+            print(f"Baseline campaign: {baseline_appeal_code}")
+        result = run_diagnostic(toggles=toggles, baseline_appeal_code=baseline_appeal_code)
         duration = time.time() - start
         return {
             "status": "success",
