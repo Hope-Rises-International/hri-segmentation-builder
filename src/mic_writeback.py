@@ -38,13 +38,14 @@ def approve_projection(
     gc: gspread.Client,
     segment_summary: pd.DataFrame,
     campaign_id: str,
+    clear_draft: bool = False,
 ) -> dict:
-    """Approve a projection: copy Draft tab to Segment Detail tab.
+    """Write segment data to Segment Detail tab (permanent record).
 
     Per spec Section 3, Step 4:
-    - Copies Draft tab contents to Segment Detail as permanent record
+    - Copies segment summary to Segment Detail as permanent record
     - Keyed on campaign_id + segment_code (upsert — replaces prior rows for this campaign)
-    - Clears Draft tab after copy
+    - Draft tab cleared only when explicitly approved via UI (clear_draft=True)
 
     Returns dict with status and detail.
     """
@@ -82,14 +83,15 @@ def approve_projection(
     logger.info(f"  Segment Detail: {len(new_rows)} rows for campaign {campaign_id} "
                 f"({len(combined)} total rows)")
 
-    # Clear Draft tab
-    try:
-        draft_ws = sh.worksheet("Draft")
-        draft_ws.clear()
-        draft_ws.update(range_name="A1", values=[DRAFT_COLUMNS])
-        logger.info("  Draft tab cleared")
-    except gspread.exceptions.WorksheetNotFound:
-        pass
+    # Clear Draft tab only when explicitly approved via UI
+    if clear_draft:
+        try:
+            draft_ws = sh.worksheet("Draft")
+            draft_ws.clear()
+            draft_ws.update(range_name="A1", values=[DRAFT_COLUMNS])
+            logger.info("  Draft tab cleared (approved)")
+        except gspread.exceptions.WorksheetNotFound:
+            pass
 
     return {
         "status": "approved",
@@ -211,12 +213,20 @@ class PipelineWriteRecovery:
         try:
             logger.info("Pipeline write 2/3: MIC Google Sheet...")
 
+            # Step 2a: Write Draft tab (for Jessica to review)
+            from sheets_client import write_draft_tab
+            logger.info(f"  Writing Draft tab ({len(segment_summary)} segment rows)...")
+            write_draft_tab(gc, segment_summary)
+            logger.info(f"  Draft tab written successfully")
+
+            # Step 2b: Write Segment Detail (permanent record, keyed on campaign_id)
+            logger.info(f"  Writing Segment Detail for campaign {campaign_code}...")
             approval = approve_projection(gc, segment_summary, campaign_code)
             update_link_to_segments(gc, campaign_appeal_code,
                                     f"See Segment Detail tab, campaign {campaign_code}")
 
             self.status["sheets_write"] = "success"
-            logger.info(f"  Sheets: Segment Detail written, link_to_segments updated")
+            logger.info(f"  Sheets: Draft tab + Segment Detail written, link_to_segments updated")
         except Exception as e:
             self.status["sheets_write"] = "fail"
             self.status["error_message"] = f"Sheets: {e}"
