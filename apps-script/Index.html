@@ -492,6 +492,24 @@
           opt.disabled = true;
           sel.appendChild(opt);
         }
+        // Restore previously-selected baseline from localStorage
+        try {
+          var saved = localStorage.getItem('hri_baseline_appeal_code');
+          if (saved) {
+            for (var i = 0; i < sel.options.length; i++) {
+              if (sel.options[i].value === saved) {
+                sel.selectedIndex = i;
+                break;
+              }
+            }
+          }
+        } catch (e) {}
+        // Persist selection on change
+        sel.onchange = function() {
+          try {
+            localStorage.setItem('hri_baseline_appeal_code', sel.value);
+          } catch (e) {}
+        };
       })
       .getBaselineCampaigns();
   }
