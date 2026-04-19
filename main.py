@@ -30,11 +30,18 @@ def run_segmentation_diagnostic(request):
             pass
         toggles = config.get("toggles", None)
         baseline_appeal_code = config.get("baseline_appeal_code", None) or None
+        segment_overrides = config.get("segment_overrides", None) or None
         if toggles:
             print(f"Received toggles from UI: {toggles}")
         if baseline_appeal_code:
             print(f"Baseline campaign: {baseline_appeal_code}")
-        result = run_diagnostic(toggles=toggles, baseline_appeal_code=baseline_appeal_code)
+        if segment_overrides:
+            print(f"Segment overrides: {segment_overrides}")
+        result = run_diagnostic(
+            toggles=toggles,
+            baseline_appeal_code=baseline_appeal_code,
+            segment_overrides=segment_overrides,
+        )
         duration = time.time() - start
         return {
             "status": "success",

@@ -42,20 +42,28 @@ def fit_to_budget(
     waterfall_result: pd.DataFrame,
     target_qty: int,
     segment_summary: pd.DataFrame,
+    segment_overrides: dict = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Three-pass budget-target fitting.
+    """Three-pass budget-target fitting with optional per-segment operator overrides.
 
     Args:
         waterfall_result: Full waterfall output with all assigned donors.
         target_qty: Budget target quantity from MIC.
         segment_summary: Segment summary with quantities and statuses.
+        segment_overrides: Optional per-segment operator controls:
+            {segment_code: {'include': bool, 'percent_include': int}}
+            - include=False: drop segment quantity to 0, freed slots re-fit
+            - percent_include<100: keep top N% by RFM score, rest marked as
+              quantity_reduction (go to Matchback, not Printer)
 
     Returns:
         (fitted_result, fitted_summary, fit_info) where:
-        - fitted_result: waterfall_result with trimmed donors marked
+        - fitted_result: waterfall_result with budget_trimmed and quantity_reduced flags
         - fitted_summary: segment_summary with Full Universe and Budget Fit columns
         - fit_info: dict with pass used, trimmed count, gap, etc.
     """
+    segment_overrides = segment_overrides or {}
+
     # Get the mailable universe (assigned, not suppressed)
     assigned = waterfall_result[
         (waterfall_result["segment_code"] != "")
@@ -71,6 +79,53 @@ def fit_to_budget(
 
     result = waterfall_result.copy()
     result["budget_trimmed"] = False
+    result["quantity_reduced"] = False
+
+    # ===================================================================
+    # Operator Overrides: apply before budget fitting
+    # ===================================================================
+    overrides_applied = {}
+    if segment_overrides:
+        logger.info(f"  Applying operator overrides to {len(segment_overrides)} segments")
+        for seg_code, override in segment_overrides.items():
+            include = override.get("include", True)
+            percent_include = override.get("percent_include", 100)
+
+            seg_donors = assigned[assigned["segment_code"] == seg_code]
+            if len(seg_donors) == 0:
+                continue
+
+            if not include:
+                # Exclude entire segment — mark as budget_trimmed
+                seg_ids = set(seg_donors["account_id"])
+                result.loc[result["account_id"].isin(seg_ids), "budget_trimmed"] = True
+                overrides_applied[seg_code] = {"excluded": len(seg_ids), "percent": 0}
+                logger.info(f"    {seg_code}: EXCLUDED by operator ({len(seg_ids):,} donors)")
+            elif percent_include < 100:
+                # Keep top N% by RFM score, rest marked as quantity_reduced
+                keep_count = max(1, int(len(seg_donors) * percent_include / 100))
+                sorted_donors = seg_donors.sort_values(
+                    by=["RFM_weighted_score", "cumulative_giving"],
+                    ascending=[False, False],
+                )
+                reduce_ids = set(sorted_donors.iloc[keep_count:]["account_id"])
+                result.loc[result["account_id"].isin(reduce_ids), "quantity_reduced"] = True
+                overrides_applied[seg_code] = {
+                    "kept": keep_count,
+                    "reduced": len(reduce_ids),
+                    "percent": percent_include,
+                }
+                logger.info(f"    {seg_code}: {percent_include}% include — "
+                            f"keeping top {keep_count:,} of {len(seg_donors):,} by RFM score")
+
+    # Recompute assigned universe after overrides (excluded = budget_trimmed treated as trimmed)
+    assigned_after_overrides = assigned[
+        ~assigned["account_id"].isin(
+            set(result.loc[result["budget_trimmed"] == True, "account_id"]) |
+            set(result.loc[result["quantity_reduced"] == True, "account_id"])
+        )
+    ]
+    available_universe = len(assigned_after_overrides)
 
     if target_qty <= 0:
         logger.info("  No target quantity — skipping budget fit")
@@ -85,35 +140,38 @@ def fit_to_budget(
         }
 
     # ===================================================================
-    # Pass 1: Full Universe — already computed (the waterfall output)
+    # Pass 1: Full Universe (post-overrides)
     # ===================================================================
-    logger.info(f"  Pass 1 — Full Universe: {full_universe:,}")
+    logger.info(f"  Pass 1 — Full Universe: {full_universe:,} "
+                f"(after overrides: {available_universe:,})")
 
-    if full_universe <= target_qty * 1.02:  # Within 2% — close enough
+    if available_universe <= target_qty * 1.02:  # Within 2% — close enough
         # ===============================================================
         # Pass 3: Expansion — universe < target
         # ===============================================================
-        gap = target_qty - full_universe
+        gap = target_qty - available_universe
         if gap > 0:
             logger.info(f"  Pass 3 — Universe below target. Gap: {gap:,}")
-            logger.info(f"  Expansion levers would be presented to operator (Phase 6 UI)")
         else:
             logger.info(f"  Universe matches target (within 2%)")
 
-        summary["Budget Fit"] = summary["Quantity"]
+        # Update summary with Budget Fit reflecting any overrides
+        summary = _update_summary_with_overrides(summary, result, assigned, overrides_applied)
         return result, summary, {
             "pass": "3_expansion" if gap > 0 else "1_match",
             "full_universe": full_universe,
+            "available_universe": available_universe,
             "target": target_qty,
-            "fitted": full_universe,
+            "fitted": available_universe,
             "trimmed": 0,
             "gap": max(gap, 0),
+            "overrides_applied": overrides_applied,
         }
 
     # ===================================================================
     # Pass 2: Fit to Target — trim from bottom of waterfall
     # ===================================================================
-    excess = full_universe - target_qty
+    excess = available_universe - target_qty
     logger.info(f"  Pass 2 — Trimming {excess:,} records from bottom of waterfall")
 
     trimmed_total = 0
@@ -123,7 +181,7 @@ def fit_to_budget(
         if trimmed_total >= excess:
             break
 
-        seg_donors = assigned[assigned["segment_code"] == seg_code]
+        seg_donors = assigned_after_overrides[assigned_after_overrides["segment_code"] == seg_code]
         if len(seg_donors) == 0:
             continue
 
@@ -151,26 +209,78 @@ def fit_to_budget(
         trimmed_total += trimmed_count
         trimmed_by_segment[seg_code] = trimmed_count
 
-    # Update summary with Budget Fit column
-    for idx, row in summary.iterrows():
-        code = row["Segment Code"]
-        trimmed = trimmed_by_segment.get(code, 0)
-        summary.at[idx, "Budget Fit"] = int(row["Quantity"]) - trimmed
-        if trimmed == int(row["Quantity"]):
-            summary.at[idx, "Status"] = "Below Budget Line"
-        elif trimmed > 0:
-            summary.at[idx, "Status"] = f"Partial Trim (-{trimmed:,})"
+    # Update summary with Budget Fit column (combining overrides + trim)
+    summary = _update_summary_with_overrides(
+        summary, result, assigned, overrides_applied, trimmed_by_segment
+    )
 
-    fitted_total = full_universe - trimmed_total
+    fitted_total = available_universe - trimmed_total
     logger.info(f"  Pass 2 complete — Fitted: {fitted_total:,} "
                 f"(trimmed {trimmed_total:,} from {len(trimmed_by_segment)} segments)")
 
     return result, summary, {
         "pass": "2_fit",
         "full_universe": full_universe,
+        "available_universe": available_universe,
         "target": target_qty,
         "fitted": fitted_total,
         "trimmed": trimmed_total,
         "trimmed_by_segment": trimmed_by_segment,
+        "overrides_applied": overrides_applied,
         "gap": 0,
     }
+
+
+def _update_summary_with_overrides(
+    summary: pd.DataFrame,
+    result: pd.DataFrame,
+    assigned: pd.DataFrame,
+    overrides_applied: dict,
+    trimmed_by_segment: dict = None,
+) -> pd.DataFrame:
+    """Update segment summary with Budget Fit reflecting overrides + trim.
+
+    Budget Fit = original Quantity - excluded - quantity_reduced - budget_trimmed.
+    Status column reflects the operator action taken.
+    """
+    trimmed_by_segment = trimmed_by_segment or {}
+
+    # Count per-segment how many records were excluded, reduced, or trimmed
+    seg_stats = {}
+    for seg_code in summary["Segment Code"].unique():
+        seg_mask = result["segment_code"] == seg_code
+        excluded = int((seg_mask & result["budget_trimmed"]).sum())
+        reduced = int((seg_mask & result["quantity_reduced"]).sum())
+        seg_stats[seg_code] = {
+            "excluded": excluded,
+            "reduced": reduced,
+            "trimmed": trimmed_by_segment.get(seg_code, 0),
+        }
+
+    for idx, row in summary.iterrows():
+        code = row["Segment Code"]
+        qty = int(row["Quantity"])
+        stats = seg_stats.get(code, {})
+        # budget_trimmed + quantity_reduced flags cover both operator overrides and pass-2 trim
+        removed = stats.get("excluded", 0) + stats.get("reduced", 0)
+        summary.at[idx, "Budget Fit"] = qty - removed
+        summary.at[idx, "Include"] = removed < qty
+
+        override = overrides_applied.get(code, {})
+        if override.get("percent", 100) == 0:
+            summary.at[idx, "Status"] = "Excluded by operator"
+            summary.at[idx, "% Include"] = 0
+        elif "percent" in override and override["percent"] < 100:
+            summary.at[idx, "Status"] = f"{override['percent']}% Include (top RFM)"
+            summary.at[idx, "% Include"] = override["percent"]
+        elif removed == qty:
+            summary.at[idx, "Status"] = "Below Budget Line"
+            summary.at[idx, "% Include"] = 100
+        elif removed > 0:
+            summary.at[idx, "Status"] = f"Partial Trim (-{removed:,})"
+            summary.at[idx, "% Include"] = 100
+        else:
+            summary.at[idx, "Status"] = "Include"
+            summary.at[idx, "% Include"] = 100
+
+    return summary

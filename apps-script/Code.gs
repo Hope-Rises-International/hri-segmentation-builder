@@ -226,6 +226,67 @@ function getBaselineData(appealCode) {
 
 
 /**
+ * Save operator per-segment overrides (include flag + percent_include) to Draft tab.
+ * Adds columns operator_include_flag and percent_include if not present.
+ */
+function saveDraftOverrides(overrides) {
+  const ss = SpreadsheetApp.openById(MIC_SHEET_ID);
+  const ws = ss.getSheetByName(TAB_DRAFT);
+  if (!ws) return { error: 'Draft tab not found' };
+
+  const data = ws.getDataRange().getValues();
+  if (data.length <= 1) return { error: 'Draft tab is empty' };
+
+  const headers = data[0];
+  const segCodeCol = headers.indexOf('Segment Code');
+  if (segCodeCol < 0) return { error: 'Segment Code column not found' };
+
+  // Ensure operator_include_flag and percent_include columns exist
+  let includeCol = headers.indexOf('operator_include_flag');
+  let percentCol = headers.indexOf('percent_include');
+  const newHeaders = headers.slice();
+  let appendedHeaders = false;
+  if (includeCol < 0) {
+    newHeaders.push('operator_include_flag');
+    includeCol = newHeaders.length - 1;
+    appendedHeaders = true;
+  }
+  if (percentCol < 0) {
+    newHeaders.push('percent_include');
+    percentCol = newHeaders.length - 1;
+    appendedHeaders = true;
+  }
+
+  // Resize worksheet to fit new columns
+  if (ws.getMaxColumns() < newHeaders.length) {
+    ws.insertColumnsAfter(ws.getMaxColumns(), newHeaders.length - ws.getMaxColumns());
+  }
+  if (appendedHeaders) {
+    ws.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
+  }
+
+  // Build payload rows
+  let count = 0;
+  for (let i = 1; i < data.length; i++) {
+    const code = String(data[i][segCodeCol] || '').trim();
+    if (!code) continue;
+    const ov = overrides[code];
+    if (!ov) {
+      // No override — default: include=true, percent=100
+      ws.getRange(i + 1, includeCol + 1).setValue(true);
+      ws.getRange(i + 1, percentCol + 1).setValue(100);
+      continue;
+    }
+    ws.getRange(i + 1, includeCol + 1).setValue(Boolean(ov.include));
+    ws.getRange(i + 1, percentCol + 1).setValue(Number(ov.percent_include || 0));
+    count++;
+  }
+
+  return { status: 'success', count: count };
+}
+
+
+/**
  * Get current Draft tab contents (segment summary).
  */
 function getDraftData() {

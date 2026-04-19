@@ -622,58 +622,201 @@
       .getDraftData();
   }
 
+  // Cache segments in memory for live recalculation
+  var draftSegments = [];
+
   function renderDraftTable(segments) {
-    var total = 0;
-    var totalCost = 0;
-    var totalRev = 0;
-    var html = '<h3>Draft Tab Preview</h3><table class="seg-table"><thead><tr>' +
-      '<th>Segment</th><th>Name</th><th class="num">Qty</th>' +
+    // Store for live recalculation
+    draftSegments = segments.map(function(s) {
+      var defaultInclude = !String(s['Status'] || '').includes('Below Budget Line');
+      var statusStr = String(s['Status'] || '');
+      var defaultPercent = 100;
+      var pm = statusStr.match(/(\d+)%/);
+      if (pm) defaultPercent = Number(pm[1]);
+      if (String(s['% Include'] || '').match(/^\d+$/)) defaultPercent = Number(s['% Include']);
+      return {
+        code: s['Segment Code'] || '',
+        name: s['Segment Name'] || '',
+        qty: Number(s['Quantity'] || 0),
+        fit: Number(s['Budget Fit'] || s['Quantity'] || 0),
+        cpp: Number(s['CPP'] || 0),
+        cost: Number(s['Total Cost'] || 0),
+        rr_str: s['Hist. Response Rate'] || '',
+        rr: parseFloat(String(s['Hist. Response Rate'] || '0').replace('%','')) / 100 || 0,
+        avg: Number(s['Hist. Avg Gift'] || 0),
+        rev: Number(s['Proj. Gross Revenue'] || 0),
+        net: Number(s['Proj. Net Revenue'] || 0),
+        be: s['Break-Even Rate'] || '',
+        margin: s['Margin'] || '',
+        status: statusStr,
+        include: defaultInclude,
+        percent: defaultPercent,
+      };
+    });
+    renderDraftHTML();
+  }
+
+  function renderDraftHTML() {
+    var html = '<h3>Draft Tab Preview</h3>' +
+      '<p style="font-size:12px;color:var(--hri-muted);margin-bottom:8px">' +
+      'Uncheck a segment to exclude it. Set % Include (1-100) to keep only the top-ranked RFM donors in that segment. ' +
+      'Click <strong>Re-fit to Budget</strong> to redistribute freed quantity to other segments.</p>' +
+      '<table class="seg-table"><thead><tr>' +
+      '<th>Include</th><th>Segment</th><th>Name</th><th class="num">Qty</th>' +
+      '<th class="num" title="% Include: keep top N% by RFM score">% Incl</th>' +
       '<th class="num">Budget Fit</th>' +
       '<th class="num">CPP</th><th class="num">Total Cost</th>' +
       '<th class="num">Hist RR</th><th class="num">Hist AvgGift</th>' +
       '<th class="num">Proj Rev</th><th class="num">Net Rev</th>' +
       '<th>Status</th></tr></thead><tbody>';
 
-    segments.forEach(function(s) {
-      var qty = Number(s['Quantity'] || 0);
-      var fit = Number(s['Budget Fit'] || qty);
-      var status = s['Status'] || 'Include';
+    var total = 0, totalCost = 0, totalRev = 0, totalNet = 0;
+
+    draftSegments.forEach(function(s, i) {
+      // Effective quantity after operator overrides
+      var effectiveFit = s.include ? Math.round(s.fit * s.percent / 100) : 0;
+      var effectiveCost = effectiveFit * s.cpp;
+      var effectiveRev = effectiveFit * s.rr * s.avg;
+      var effectiveNet = effectiveRev - effectiveCost;
+      total += effectiveFit;
+      totalCost += effectiveCost;
+      totalRev += effectiveRev;
+      totalNet += effectiveNet;
+
       var statusClass = 'status-include';
-      if (status.includes('Below')) statusClass = 'status-below';
-      else if (status.includes('Trim')) statusClass = 'status-trim';
-      if (!status.includes('Below Budget Line')) total += fit;
+      var dispStatus = s.status;
+      if (!s.include) { dispStatus = 'Excluded by operator'; statusClass = 'status-below'; }
+      else if (s.percent < 100) { dispStatus = s.percent + '% Include (top RFM)'; statusClass = 'status-trim'; }
+      else if (s.status.indexOf('Below') >= 0) statusClass = 'status-below';
+      else if (s.status.indexOf('Trim') >= 0) statusClass = 'status-trim';
 
-      var cpp = s['CPP'] || '';
-      var cost = s['Total Cost'] || '';
-      var rr = s['Hist. Response Rate'] || '';
-      var avg = s['Hist. Avg Gift'] || '';
-      var rev = s['Proj. Gross Revenue'] || '';
-      var net = s['Proj. Net Revenue'] || '';
-      if (cost && !isNaN(Number(cost))) totalCost += Number(cost);
-      if (rev && !isNaN(Number(rev))) totalRev += Number(rev);
+      var includeChecked = s.include ? 'checked' : '';
+      var rowStyle = s.include ? '' : ' style="opacity:0.4"';
 
-      html += '<tr><td>' + (s['Segment Code'] || '') + '</td>' +
-        '<td>' + (s['Segment Name'] || '') + '</td>' +
-        '<td class="num">' + fmt(qty) + '</td>' +
-        '<td class="num">' + fmt(fit) + '</td>' +
-        '<td class="num">' + (cpp ? '$' + Number(cpp).toFixed(2) : '') + '</td>' +
-        '<td class="num">' + (cost ? '$' + fmt(Math.round(Number(cost))) : '') + '</td>' +
-        '<td class="num">' + rr + '</td>' +
-        '<td class="num">' + (avg ? '$' + Number(avg).toFixed(0) : '') + '</td>' +
-        '<td class="num">' + (rev ? '$' + fmt(Math.round(Number(rev))) : '') + '</td>' +
-        '<td class="num">' + (net ? '$' + fmt(Math.round(Number(net))) : '') + '</td>' +
-        '<td class="' + statusClass + '">' + status + '</td></tr>';
+      html += '<tr' + rowStyle + '>' +
+        '<td><input type="checkbox" ' + includeChecked + ' onchange="onSegmentInclude(' + i + ', this.checked)"></td>' +
+        '<td>' + s.code + '</td>' +
+        '<td>' + s.name + '</td>' +
+        '<td class="num">' + fmt(s.qty) + '</td>' +
+        '<td class="num"><input type="number" min="1" max="100" value="' + s.percent +
+          '" style="width:50px;text-align:right;font-size:12px;padding:2px 4px" ' +
+          'onchange="onSegmentPercent(' + i + ', this.value)"' +
+          (s.include ? '' : ' disabled') + '></td>' +
+        '<td class="num">' + fmt(effectiveFit) + '</td>' +
+        '<td class="num">' + (s.cpp ? '$' + s.cpp.toFixed(2) : '') + '</td>' +
+        '<td class="num">' + (effectiveCost ? '$' + fmt(Math.round(effectiveCost)) : '') + '</td>' +
+        '<td class="num">' + s.rr_str + '</td>' +
+        '<td class="num">' + (s.avg ? '$' + s.avg.toFixed(0) : '') + '</td>' +
+        '<td class="num">' + (effectiveRev ? '$' + fmt(Math.round(effectiveRev)) : '') + '</td>' +
+        '<td class="num">' + (effectiveNet ? '$' + fmt(Math.round(effectiveNet)) : '') + '</td>' +
+        '<td class="' + statusClass + '">' + dispStatus + '</td></tr>';
     });
 
-    html += '</tbody><tfoot><tr><td colspan="2"><strong>Total Mailable</strong></td>' +
-      '<td></td><td class="num"><strong>' + fmt(total) + '</strong></td>' +
+    html += '</tbody><tfoot><tr>' +
+      '<td colspan="3"><strong>Totals</strong></td>' +
+      '<td></td><td></td>' +
+      '<td class="num"><strong>' + fmt(total) + '</strong></td>' +
       '<td></td><td class="num"><strong>$' + fmt(Math.round(totalCost)) + '</strong></td>' +
       '<td colspan="2"></td>' +
       '<td class="num"><strong>$' + fmt(Math.round(totalRev)) + '</strong></td>' +
-      '<td class="num"><strong>$' + fmt(Math.round(totalRev - totalCost)) + '</strong></td>' +
-      '<td></td></tr></tfoot></table>';
+      '<td class="num"><strong>$' + fmt(Math.round(totalNet)) + '</strong></td>' +
+      '<td></td></tr></tfoot></table>' +
+      '<div class="action-bar" style="margin-top:12px">' +
+      '<button class="btn btn-primary" onclick="reFitToBudget()">Re-fit to Budget</button>' +
+      '<button class="btn btn-outline" onclick="saveDraftOverrides()">Save Draft</button>' +
+      '<button class="btn btn-outline" onclick="resetSegmentOverrides()">Reset Overrides</button>' +
+      '</div>' +
+      '<div id="override-msg"></div>';
 
     document.getElementById('draft-preview').innerHTML = html;
+  }
+
+  function onSegmentInclude(idx, checked) {
+    draftSegments[idx].include = checked;
+    renderDraftHTML();
+  }
+
+  function onSegmentPercent(idx, value) {
+    var pct = Math.max(1, Math.min(100, Number(value) || 100));
+    draftSegments[idx].percent = pct;
+    renderDraftHTML();
+  }
+
+  function resetSegmentOverrides() {
+    draftSegments.forEach(function(s) {
+      s.include = !s.status.includes('Below Budget Line');
+      s.percent = 100;
+    });
+    renderDraftHTML();
+  }
+
+  function getSegmentOverrides() {
+    var overrides = {};
+    draftSegments.forEach(function(s) {
+      if (!s.include || s.percent < 100) {
+        overrides[s.code] = {
+          include: s.include,
+          percent_include: s.include ? s.percent : 0,
+        };
+      }
+    });
+    return overrides;
+  }
+
+  function reFitToBudget() {
+    if (!selectedCampaign) return;
+    var overrides = getSegmentOverrides();
+    showMsg('override-msg', 'info',
+      '<span class="spinner"></span> Re-fitting with operator overrides... This may take several minutes.');
+
+    var config = {
+      campaign_name: selectedCampaign.campaign_name,
+      appeal_code: selectedCampaign.appeal_code,
+      budget_qty_mailed: selectedCampaign.budget_qty_mailed,
+      budget_cost: selectedCampaign.budget_cost,
+      campaign_type: selectedCampaign.campaign_type,
+      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      toggles: getToggles(),
+      segment_overrides: overrides,
+    };
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error) {
+          showMsg('override-msg', 'error', result.error);
+        } else if (result.status === 'running') {
+          showMsg('override-msg', 'info',
+            'Re-fit started. Click Refresh Draft Tab in a few minutes to see results.');
+        } else {
+          showMsg('override-msg', 'success', 'Re-fit complete. ' + result.message);
+          refreshDraft();
+        }
+      })
+      .withFailureHandler(function(e) {
+        var m = String(e);
+        if (m.indexOf('Timeout') >= 0 || m.indexOf('timed out') >= 0 || m.indexOf('deadline') >= 0) {
+          showMsg('override-msg', 'info',
+            'Re-fit started. Click Refresh Draft Tab in a few minutes.');
+        } else {
+          showMsg('override-msg', 'error', 'Re-fit failed: ' + m);
+        }
+      })
+      .runProjection(config);
+  }
+
+  function saveDraftOverrides() {
+    var overrides = getSegmentOverrides();
+    showMsg('override-msg', 'info', '<span class="spinner"></span> Saving overrides to Draft tab...');
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result.error) showMsg('override-msg', 'error', result.error);
+        else showMsg('override-msg', 'success',
+          'Saved ' + (result.count || 0) + ' override(s) to Draft tab.');
+      })
+      .withFailureHandler(function(e) {
+        showMsg('override-msg', 'error', 'Save failed: ' + e);
+      })
+      .saveDraftOverrides(overrides);
   }
 
   // --- Approve ---

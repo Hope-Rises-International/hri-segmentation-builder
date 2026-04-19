@@ -91,7 +91,7 @@ def _pick_campaign_from_mic(mic_df: pd.DataFrame):
     }
 
 
-def run_diagnostic(toggles=None, baseline_appeal_code=None) -> dict:
+def run_diagnostic(toggles=None, baseline_appeal_code=None, segment_overrides=None) -> dict:
     """Execute the full pipeline. Reads from BQ cache when fresh, falls back to live SF.
 
     Args:
@@ -99,6 +99,8 @@ def run_diagnostic(toggles=None, baseline_appeal_code=None) -> dict:
                  If None, uses DEFAULT_TOGGLES.
         baseline_appeal_code: Optional appeal code of a prior campaign to use as
                               performance baseline for economics columns.
+        segment_overrides: Optional per-segment operator overrides:
+                          {segment_code: {'include': bool, 'percent_include': int}}.
     """
     timings = {}
     pipeline_start = time.time()
@@ -249,7 +251,8 @@ def run_diagnostic(toggles=None, baseline_appeal_code=None) -> dict:
     # --- Step 13: Budget-target fitting ---
     t0 = time.time()
     waterfall_result, segment_summary, fit_info = fit_to_budget(
-        waterfall_result, target_qty, segment_summary
+        waterfall_result, target_qty, segment_summary,
+        segment_overrides=segment_overrides,
     )
     timings["budget_fit"] = round(time.time() - t0, 1)
     logger.info(f"[{_elapsed()}s] Budget fit done ({timings['budget_fit']}s)")

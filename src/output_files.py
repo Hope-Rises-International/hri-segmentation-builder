@@ -166,6 +166,10 @@ def generate_output_files(
     if "exclusion_reason" not in all_codes.columns:
         all_codes["exclusion_reason"] = ""
     all_codes["exclusion_reason"] = all_codes["exclusion_reason"].fillna("")
+    # Mark quantity-reduced records with exclusion_reason so they go to Matchback not Printer
+    if "quantity_reduced" in all_codes.columns:
+        qr_mask = all_codes["quantity_reduced"].fillna(False) & (all_codes["exclusion_reason"] == "")
+        all_codes.loc[qr_mask, "exclusion_reason"] = "quantity_reduction"
     all_codes["_is_excluded"] = all_codes["exclusion_reason"] != ""
 
     # Merge account fields

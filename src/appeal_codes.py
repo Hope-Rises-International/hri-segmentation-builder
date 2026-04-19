@@ -67,11 +67,18 @@ def generate_appeal_codes(
     if not campaign_month and len(campaign_appeal_code) >= 5:
         campaign_month = campaign_appeal_code[3:5]
 
+    # Include quantity_reduced records (they go to Matchback) but not budget_trimmed
+    # (pass-2 trim or operator exclude — those are dropped entirely)
     assigned = waterfall_result[
         (waterfall_result["segment_code"] != "")
         & (waterfall_result["suppression_reason"] == "")
         & (~waterfall_result.get("budget_trimmed", pd.Series(False)))
     ].copy()
+    # Pass the quantity_reduced flag through so output_files can filter Printer
+    if "quantity_reduced" in waterfall_result.columns:
+        assigned["quantity_reduced"] = waterfall_result.loc[assigned.index, "quantity_reduced"].fillna(False)
+    else:
+        assigned["quantity_reduced"] = False
 
     results = []
     for _, row in assigned.iterrows():
@@ -120,6 +127,7 @@ def generate_appeal_codes(
             "test_flag": test_flag,
             "ca_version": ca_version,
             "missing_constituent_id": missing_id,
+            "quantity_reduced": bool(row.get("quantity_reduced", False)),
         })
 
     df = pd.DataFrame(results)
