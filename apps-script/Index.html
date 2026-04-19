@@ -610,7 +610,9 @@
       budget_qty_mailed: selectedCampaign.budget_qty_mailed,
       budget_cost: selectedCampaign.budget_cost,
       campaign_type: selectedCampaign.campaign_type,
+      baseline_appeal_code: document.getElementById('baseline-select').value || '',
       toggles: getToggles(),
+      segment_overrides: getSegmentOverrides(),
     };
 
     showMsg('projection-msg', 'info', 'Clearing and re-running...');

@@ -31,10 +31,11 @@ def run_segmentation_diagnostic(request):
         toggles = config.get("toggles", None)
         baseline_appeal_code = config.get("baseline_appeal_code", None) or None
         segment_overrides = config.get("segment_overrides", None) or None
+        # Always log config keys for diagnostics
+        print(f"Config keys received: {sorted(config.keys())}")
+        print(f"Baseline campaign: {baseline_appeal_code or '(not set)'}")
         if toggles:
             print(f"Received toggles from UI: {toggles}")
-        if baseline_appeal_code:
-            print(f"Baseline campaign: {baseline_appeal_code}")
         if segment_overrides:
             print(f"Segment overrides: {segment_overrides}")
         result = run_diagnostic(
