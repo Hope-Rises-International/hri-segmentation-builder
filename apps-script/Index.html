@@ -802,13 +802,14 @@
 
     google.script.run
       .withSuccessHandler(function(result) {
-        if (result.error) {
+        if (result && result.error) {
           showMsg('override-msg', 'error', result.error);
-        } else if (result.status === 'running') {
+        } else if (result && result.status === 'running') {
           showMsg('override-msg', 'info',
-            'Re-fit started. Click Refresh Draft Tab in a few minutes to see results.');
+            'Re-fit started (running in background, ~6 min). Click Refresh Draft Tab when ready.');
         } else {
-          showMsg('override-msg', 'success', 'Re-fit complete. ' + result.message);
+          showMsg('override-msg', 'success',
+            'Re-fit complete. ' + ((result && result.message) || 'Draft tab updated.'));
           refreshDraft();
         }
       })
@@ -816,12 +817,12 @@
         var m = String(e);
         if (m.indexOf('Timeout') >= 0 || m.indexOf('timed out') >= 0 || m.indexOf('deadline') >= 0) {
           showMsg('override-msg', 'info',
-            'Re-fit started. Click Refresh Draft Tab in a few minutes.');
+            'Re-fit started (running in background, ~6 min). Click Refresh Draft Tab when ready.');
         } else {
           showMsg('override-msg', 'error', 'Re-fit failed: ' + m);
         }
       })
-      .runProjection(config);
+      .runProjectionConfirmed(config);  // Bypass "already has data" check — operator is explicitly overwriting
   }
 
   function saveDraftOverrides() {
