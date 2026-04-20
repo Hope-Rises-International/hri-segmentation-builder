@@ -267,23 +267,67 @@
     <div class="toggle-grid" id="suppression-toggles"></div>
   </div>
 
-  <!-- Step 3: Run Projection -->
+  <!-- Step 3: Scenario Editor -->
   <div class="card hidden" id="step-project">
-    <h2>Step 3: Run Projection</h2>
+    <h2>Step 3: Scenario Editor</h2>
     <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
-      Runs the full waterfall, suppression, and budget-target fitting. Results appear in the
-      <strong>Draft tab</strong> of the MIC for review.
+      Load the universe once (~3 min). Then explore any number of scenarios instantly in the browser.
+      Pick a target type, let the solver find the optimal mix, or override per-segment. No waiting.
     </p>
     <div class="action-bar">
-      <button class="btn btn-primary" id="btn-project" onclick="runProjection()">
-        Run Projection
+      <button class="btn btn-primary" id="btn-load-universe" onclick="loadUniverse()">
+        Load Universe
+      </button>
+      <button class="btn btn-outline" id="btn-project" onclick="runProjection()" title="Legacy — 5-min full pipeline with Draft tab write">
+        Legacy Full Projection
       </button>
       <button class="btn btn-outline" onclick="refreshDraft()">
         Refresh Draft Tab
       </button>
     </div>
     <div id="projection-msg"></div>
+
+    <!-- Target-driven fit panel — appears after universe load -->
+    <div id="target-panel" class="hidden" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
+      <h3 style="margin-bottom:8px">Target-Driven Fit</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+        <div>
+          <label style="font-size:11px;color:var(--hri-muted);display:block;margin-bottom:2px">Target Type</label>
+          <select id="target-type" onchange="onTargetTypeChange()">
+            <option value="quantity">Quantity</option>
+            <option value="gross">Gross Revenue</option>
+            <option value="net">Net Revenue</option>
+            <option value="roi">ROI Threshold</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--hri-muted);display:block;margin-bottom:2px" id="target-value-label">Target Qty</label>
+          <input type="number" id="target-value" value="54000" style="width:140px">
+        </div>
+        <button class="btn btn-gold" onclick="runAutoFit()">Auto-fit to Target</button>
+        <div style="flex:1;font-size:13px;color:var(--hri-muted);padding:6px 10px;background:white;border-radius:6px;min-width:250px" id="target-status">
+          Target: <strong id="target-display">54,000 qty</strong> · Current: <strong id="current-display">—</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Universe meta -->
+    <div id="universe-meta" class="hidden" style="margin-top:12px;font-size:12px;color:var(--hri-muted)"></div>
+
+    <!-- Segment table -->
     <div id="draft-preview" class="hidden" style="margin-top:16px"></div>
+
+    <!-- Scenario comparison panel -->
+    <div id="scenarios-panel" class="hidden" style="margin-top:24px;padding:16px;background:white;border:1px solid var(--hri-border);border-radius:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="margin:0">Saved Scenarios</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="scenario-name" placeholder="Scenario name" style="width:200px;font-size:13px">
+          <button class="btn btn-sage" onclick="saveCurrentScenario()" style="padding:6px 14px;font-size:12px">Save Current</button>
+        </div>
+      </div>
+      <div id="scenarios-list"></div>
+    </div>
   </div>
 
   <!-- Step 4: Approve + Generate -->
@@ -645,6 +689,337 @@
   // Cache segments in memory for live recalculation
   var draftSegments = [];
 
+  // Universe dataset from /build-universe endpoint. Stays in browser memory.
+  var universe = null;  // {donors: [], segments: [], campaign: {}, meta: {}}
+  var savedScenarios = [];  // Array of saved scenario snapshots
+
+  // --- Target Types ---
+  var TARGET_LABELS = {
+    quantity: 'Target Qty',
+    gross: 'Target Gross Rev ($)',
+    net: 'Target Net Rev ($)',
+    roi: 'Min ROI (e.g. 2 for 2:1)',
+  };
+
+  function onTargetTypeChange() {
+    var t = document.getElementById('target-type').value;
+    var lbl = document.getElementById('target-value-label');
+    var val = document.getElementById('target-value');
+    lbl.textContent = TARGET_LABELS[t] || 'Target';
+    if (t === 'quantity') val.value = selectedCampaign ? selectedCampaign.budget_qty_mailed : 54000;
+    else if (t === 'gross') val.value = 150000;
+    else if (t === 'net') val.value = 75000;
+    else if (t === 'roi') val.value = 2;
+    updateTargetDisplay();
+  }
+
+  function updateTargetDisplay() {
+    var t = document.getElementById('target-type').value;
+    var v = Number(document.getElementById('target-value').value || 0);
+    var disp = document.getElementById('target-display');
+    if (t === 'quantity') disp.textContent = fmt(v) + ' qty';
+    else if (t === 'gross') disp.textContent = '$' + fmt(v) + ' gross';
+    else if (t === 'net') disp.textContent = '$' + fmt(v) + ' net';
+    else if (t === 'roi') disp.textContent = v + ':1 ROI';
+  }
+
+  // --- Load Universe ---
+  function loadUniverse() {
+    if (!selectedCampaign) {
+      showMsg('projection-msg', 'error', 'Select a campaign first.');
+      return;
+    }
+    var btn = document.getElementById('btn-load-universe');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Loading universe...';
+    showMsg('projection-msg', 'info',
+      'Loading universe (~3 min first time, then scenario editing is instant)...');
+
+    var config = {
+      campaign_name: selectedCampaign.campaign_name,
+      appeal_code: selectedCampaign.appeal_code,
+      budget_qty_mailed: selectedCampaign.budget_qty_mailed,
+      budget_cost: selectedCampaign.budget_cost,
+      campaign_type: selectedCampaign.campaign_type,
+      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      toggles: getToggles(),
+    };
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.innerHTML = 'Reload Universe';
+        if (result && result.error) {
+          showMsg('projection-msg', 'error', result.error);
+          return;
+        }
+        if (!result || !result.segments) {
+          showMsg('projection-msg', 'warn',
+            'Universe still loading in the background. Click Reload Universe in ~3 min.');
+          return;
+        }
+        onUniverseLoaded(result);
+      })
+      .withFailureHandler(function(e) {
+        btn.disabled = false;
+        btn.innerHTML = 'Reload Universe';
+        var m = String(e);
+        if (m.indexOf('Timeout') >= 0 || m.indexOf('timed out') >= 0 || m.indexOf('deadline') >= 0) {
+          showMsg('projection-msg', 'info',
+            'Universe building (~3 min). Click Reload Universe when ready.');
+        } else {
+          showMsg('projection-msg', 'error', 'Load failed: ' + m);
+        }
+      })
+      .buildUniverse(config);
+  }
+
+  function onUniverseLoaded(result) {
+    universe = result;
+    showMsg('projection-msg', 'success',
+      'Universe loaded: ' + fmt(result.meta.total_donors) + ' donors, ' +
+      result.segments.length + ' segments. Edit scenarios instantly below.');
+
+    // Populate universe meta
+    var meta = document.getElementById('universe-meta');
+    meta.innerHTML =
+      'Universe: <strong>' + fmt(result.meta.total_donors) + '</strong> donors · ' +
+      'CPP: <strong>$' + result.meta.cpp.toFixed(2) + '</strong> · ' +
+      'Source: <strong>' + result.meta.data_source + '</strong> · ' +
+      'Built in ' + result.meta.total_seconds + 's';
+    show('universe-meta');
+
+    // Initialize scenario segments from universe segment aggregates
+    draftSegments = result.segments.map(function(s) {
+      return {
+        code: s.segment_code,
+        name: s.segment_name,
+        qty: s.quantity,
+        fit: s.quantity,
+        cpp: s.cpp,
+        cost: s.total_cost,
+        rr: s.hist_response_rate,
+        rr_str: (s.hist_response_rate * 100).toFixed(2) + '%',
+        avg: s.hist_avg_gift,
+        rev: s.proj_gross_revenue,
+        net: s.proj_net_revenue,
+        net_per_contact: s.net_per_contact,
+        roi: s.roi,
+        status: 'Include',
+        include: true,
+        percent: 100,
+      };
+    });
+
+    show('target-panel');
+    show('draft-preview');
+    show('scenarios-panel');
+    show('step-approve');
+    show('step-files');
+    show('step-actuals');
+
+    onTargetTypeChange();
+    renderDraftHTML();
+    renderScenariosList();
+  }
+
+  // --- Greedy Solver ---
+  function runAutoFit() {
+    if (!universe) {
+      showMsg('projection-msg', 'warn', 'Load the universe first.');
+      return;
+    }
+    var targetType = document.getElementById('target-type').value;
+    var targetVal = Number(document.getElementById('target-value').value || 0);
+
+    if (targetType === 'quantity') {
+      autoFitQuantity(targetVal);
+    } else if (targetType === 'gross') {
+      autoFitGross(targetVal);
+    } else if (targetType === 'net') {
+      autoFitNet(targetVal);
+    } else if (targetType === 'roi') {
+      autoFitROI(targetVal);
+    }
+    renderDraftHTML();
+  }
+
+  // Quantity target: rank segments by economics desc, include top until qty met.
+  // Mirror the current trim logic (bottom-up) by including all and trimming lowest.
+  function autoFitQuantity(targetQty) {
+    // Start all at 100%, then trim from lowest net_per_contact up until qty == target
+    draftSegments.forEach(function(s) { s.include = true; s.percent = 100; });
+    var total = draftSegments.reduce(function(a, s) { return a + s.qty; }, 0);
+    if (total <= targetQty) return;  // Already under target — no trim
+
+    // Sort segments by net_per_contact asc (weakest first)
+    var sorted = draftSegments.slice().sort(function(a, b) {
+      return (a.net_per_contact || 0) - (b.net_per_contact || 0);
+    });
+
+    var excess = total - targetQty;
+    for (var i = 0; i < sorted.length && excess > 0; i++) {
+      var s = sorted[i];
+      if (excess >= s.qty) {
+        s.include = false; s.percent = 0;
+        excess -= s.qty;
+      } else {
+        // Partial trim: reduce percent
+        var keep = s.qty - excess;
+        s.percent = Math.max(1, Math.round(100 * keep / s.qty));
+        excess = 0;
+      }
+    }
+  }
+
+  // Gross revenue target: rank by gross_per_contact (rr × avg_gift), include highest first.
+  function autoFitGross(targetRev) {
+    draftSegments.forEach(function(s) { s.include = false; s.percent = 100; });
+    var sorted = draftSegments.slice().sort(function(a, b) {
+      return (b.rr * b.avg) - (a.rr * a.avg);
+    });
+    var cumulative = 0;
+    for (var i = 0; i < sorted.length; i++) {
+      var s = sorted[i];
+      var segRev = s.qty * s.rr * s.avg;
+      if (cumulative < targetRev) {
+        s.include = true;
+        if (cumulative + segRev >= targetRev) {
+          // Partial — reduce to hit target exactly
+          var needed = targetRev - cumulative;
+          var pct = Math.min(100, Math.ceil(100 * needed / segRev));
+          s.percent = pct;
+          cumulative += segRev * pct / 100;
+        } else {
+          s.percent = 100;
+          cumulative += segRev;
+        }
+      }
+    }
+  }
+
+  // Net revenue target: rank by net_per_contact, include positive-net segments first.
+  function autoFitNet(targetNet) {
+    draftSegments.forEach(function(s) { s.include = false; s.percent = 100; });
+    var sorted = draftSegments.slice().sort(function(a, b) {
+      return (b.net_per_contact || 0) - (a.net_per_contact || 0);
+    });
+    var cumulative = 0;
+    for (var i = 0; i < sorted.length; i++) {
+      var s = sorted[i];
+      if ((s.net_per_contact || 0) <= 0) continue;  // Skip negative-net segments
+      var segNet = s.qty * s.net_per_contact;
+      if (cumulative < targetNet) {
+        s.include = true;
+        if (cumulative + segNet >= targetNet) {
+          var needed = targetNet - cumulative;
+          var pct = Math.min(100, Math.ceil(100 * needed / segNet));
+          s.percent = pct;
+          cumulative += segNet * pct / 100;
+        } else {
+          s.percent = 100;
+          cumulative += segNet;
+        }
+      }
+    }
+  }
+
+  // ROI threshold: include only segments meeting or exceeding the threshold.
+  function autoFitROI(minROI) {
+    draftSegments.forEach(function(s) {
+      s.include = (s.roi >= minROI);
+      s.percent = 100;
+    });
+  }
+
+  // --- Current Scenario Totals (for target display) ---
+  function computeScenarioTotals() {
+    var qty = 0, cost = 0, rev = 0;
+    draftSegments.forEach(function(s) {
+      if (!s.include) return;
+      var effQ = Math.round(s.qty * s.percent / 100);
+      qty += effQ;
+      cost += effQ * s.cpp;
+      rev += effQ * s.rr * s.avg;
+    });
+    var net = rev - cost;
+    var roi = cost > 0 ? rev / cost : 0;
+    return { qty: qty, cost: cost, rev: rev, net: net, roi: roi };
+  }
+
+  // --- Scenario Save / Compare ---
+  function saveCurrentScenario() {
+    var nameInput = document.getElementById('scenario-name');
+    var name = (nameInput.value || '').trim() || ('Scenario ' + (savedScenarios.length + 1));
+    nameInput.value = '';
+
+    var totals = computeScenarioTotals();
+    var snapshot = {
+      name: name,
+      saved_at: new Date().toISOString(),
+      segments: draftSegments.map(function(s) {
+        return { code: s.code, include: s.include, percent: s.percent };
+      }),
+      totals: totals,
+      target_type: document.getElementById('target-type').value,
+      target_value: Number(document.getElementById('target-value').value || 0),
+    };
+    savedScenarios.push(snapshot);
+    if (savedScenarios.length > 5) savedScenarios.shift();  // Cap at 5
+    renderScenariosList();
+  }
+
+  function loadScenario(idx) {
+    var sc = savedScenarios[idx];
+    if (!sc) return;
+    var map = {};
+    sc.segments.forEach(function(s) { map[s.code] = s; });
+    draftSegments.forEach(function(s) {
+      var saved = map[s.code];
+      if (saved) { s.include = saved.include; s.percent = saved.percent; }
+    });
+    document.getElementById('target-type').value = sc.target_type;
+    document.getElementById('target-value').value = sc.target_value;
+    onTargetTypeChange();
+    renderDraftHTML();
+  }
+
+  function deleteScenario(idx) {
+    savedScenarios.splice(idx, 1);
+    renderScenariosList();
+  }
+
+  function renderScenariosList() {
+    var el = document.getElementById('scenarios-list');
+    if (savedScenarios.length === 0) {
+      el.innerHTML = '<p style="font-size:12px;color:var(--hri-muted);margin:0">' +
+        'No scenarios saved yet. Adjust segments, click <strong>Save Current</strong> to snapshot.</p>';
+      return;
+    }
+    var html = '<table class="seg-table"><thead><tr>' +
+      '<th>Scenario</th><th class="num">Qty</th><th class="num">Cost</th>' +
+      '<th class="num">Gross Rev</th><th class="num">Net Rev</th>' +
+      '<th class="num">ROI</th><th>Target</th><th>Actions</th></tr></thead><tbody>';
+    savedScenarios.forEach(function(sc, i) {
+      var t = sc.totals;
+      var tgt = sc.target_type + ': ' + fmt(sc.target_value);
+      html += '<tr>' +
+        '<td><strong>' + sc.name + '</strong></td>' +
+        '<td class="num">' + fmt(t.qty) + '</td>' +
+        '<td class="num">$' + fmt(Math.round(t.cost)) + '</td>' +
+        '<td class="num">$' + fmt(Math.round(t.rev)) + '</td>' +
+        '<td class="num">$' + fmt(Math.round(t.net)) + '</td>' +
+        '<td class="num">' + t.roi.toFixed(1) + ':1</td>' +
+        '<td>' + tgt + '</td>' +
+        '<td>' +
+          '<button class="btn btn-outline" style="padding:3px 10px;font-size:11px;margin-right:4px" onclick="loadScenario(' + i + ')">Load</button>' +
+          '<button class="btn btn-outline" style="padding:3px 10px;font-size:11px" onclick="deleteScenario(' + i + ')">Delete</button>' +
+        '</td></tr>';
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
   function renderDraftTable(segments) {
     // Store for live recalculation
     draftSegments = segments.map(function(s) {
@@ -677,10 +1052,22 @@
   }
 
   function renderDraftHTML() {
-    var html = '<h3>Draft Tab Preview</h3>' +
+    // Update target "Current" display if universe loaded
+    if (universe) {
+      var totals = computeScenarioTotals();
+      var targetType = document.getElementById('target-type').value;
+      var curDisp = document.getElementById('current-display');
+      if (curDisp) {
+        if (targetType === 'quantity') curDisp.textContent = fmt(totals.qty) + ' qty';
+        else if (targetType === 'gross') curDisp.textContent = '$' + fmt(Math.round(totals.rev)) + ' gross';
+        else if (targetType === 'net') curDisp.textContent = '$' + fmt(Math.round(totals.net)) + ' net';
+        else if (targetType === 'roi') curDisp.textContent = totals.roi.toFixed(1) + ':1 ROI';
+      }
+    }
+    var html = '<h3>Scenario Editor — Segment Table</h3>' +
       '<p style="font-size:12px;color:var(--hri-muted);margin-bottom:8px">' +
-      'Uncheck a segment to exclude it. Set % Include (1-100) to keep only the top-ranked RFM donors in that segment. ' +
-      'Click <strong>Re-fit to Budget</strong> to redistribute freed quantity to other segments.</p>' +
+      'Uncheck a segment to exclude it. Set % Include (1-100) to keep only the top-ranked RFM donors. ' +
+      'All totals recalculate instantly — no server round-trip.</p>' +
       '<table class="seg-table"><thead><tr>' +
       '<th>Include</th><th>Segment</th><th>Name</th><th class="num">Qty</th>' +
       '<th class="num" title="% Include: keep top N% by RFM score">% Incl</th>' +

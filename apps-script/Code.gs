@@ -9,6 +9,8 @@
 // --- Configuration ---
 const MIC_SHEET_ID = '12mLmegbb89Rf4-XGPfOozYRdmXmM67SP_QaW8aFTLWw';
 const CLOUD_RUN_URL = 'https://segmentation-builder-qelitx2nya-ue.a.run.app';
+const BUILD_UNIVERSE_URL = 'https://build-universe-qelitx2nya-ue.a.run.app';
+const APPROVE_SCENARIO_URL = 'https://approve-scenario-qelitx2nya-ue.a.run.app';  // Phase 3 pending
 const CLOUD_RUN_SA = 'hri-sfdc-sync@hri-receipt-automation.iam.gserviceaccount.com';
 const DRIVE_OUTPUT_FOLDER = '1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC';
 
@@ -18,7 +20,8 @@ const DRIVE_OUTPUT_FOLDER = '1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC';
  * The deploying user must have roles/iam.serviceAccountTokenCreator on the SA.
  * Returns a token with audience = Cloud Run URL, which Cloud Run accepts.
  */
-function getCloudRunToken_() {
+function getCloudRunToken_(audience) {
+  audience = audience || CLOUD_RUN_URL;
   const url = 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' +
     CLOUD_RUN_SA + ':generateIdToken';
   const response = UrlFetchApp.fetch(url, {
@@ -26,7 +29,7 @@ function getCloudRunToken_() {
     contentType: 'application/json',
     headers: { 'Authorization': 'Bearer ' + ScriptApp.getOAuthToken() },
     payload: JSON.stringify({
-      audience: CLOUD_RUN_URL,
+      audience: audience,
       includeEmail: true,
     }),
     muteHttpExceptions: true,
@@ -36,6 +39,47 @@ function getCloudRunToken_() {
       ' — ' + response.getContentText().substring(0, 300));
   }
   return JSON.parse(response.getContentText()).token;
+}
+
+
+/**
+ * Phase 1 — call /build-universe endpoint, return universe JSON to browser.
+ */
+function buildUniverse(campaignConfig) {
+  try {
+    const token = getCloudRunToken_(BUILD_UNIVERSE_URL);
+    const response = UrlFetchApp.fetch(BUILD_UNIVERSE_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      payload: JSON.stringify(campaignConfig),
+      muteHttpExceptions: true,
+    });
+
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+
+    if (code === 401 || code === 403) {
+      return { error: 'Universe auth failed (HTTP ' + code + ').' };
+    }
+    if (body.charAt(0) !== '{' && body.charAt(0) !== '[') {
+      return { error: 'Universe endpoint returned HTTP ' + code + '. Check logs.' };
+    }
+    const result = JSON.parse(body);
+    if (code !== 200) {
+      return { error: 'Universe error (HTTP ' + code + '): ' + (result.message || body.substring(0, 200)) };
+    }
+    return result;
+  } catch (e) {
+    // UrlFetchApp timeout is expected on first build (~3 min) — return a message,
+    // the client will show "loading in background, retry".
+    if (e.message && (e.message.indexOf('Timeout') >= 0 || e.message.indexOf('timed out') >= 0)) {
+      return { status: 'running', message: 'Universe building in background. Retry in 3 min.' };
+    }
+    throw e;
+  }
 }
 
 // MIC tab names
