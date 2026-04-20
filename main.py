@@ -1,8 +1,11 @@
 """Cloud Run entry points for the Segmentation Builder.
 
-Two entry points (deployed as separate Cloud Functions from the same source):
-1. run_segmentation_diagnostic — full pipeline (triggered by Apps Script UI)
-2. run_sf_extract — nightly SF → GCS → BQ cache (triggered by Cloud Scheduler)
+Entry points (deployed as separate Cloud Functions from the same source):
+1. run_segmentation_diagnostic — full legacy pipeline (Apps Script UI, Re-fit)
+2. run_sf_extract — nightly SF → GCS → BQ cache (Cloud Scheduler)
+3. build_universe_endpoint — Phase 1 of scenario editor: waterfall + suppression
+   + baseline rollup → universe JSON returned to browser
+4. approve_scenario_endpoint — Phase 3: accept scenario, generate outputs
 """
 
 import sys
@@ -80,4 +83,47 @@ def run_sf_extract(request):
         duration = time.time() - start
         tb = traceback.format_exc()
         print(f"ERROR after {duration:.0f}s: {e}\n{tb}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+@functions_framework.http
+def build_universe_endpoint(request):
+    """Phase 1 of scenario editor — return universe dataset as JSON to browser.
+
+    Runs waterfall + suppression + baseline rollup. Does NOT do budget
+    fitting, output files, or Drive/Sheets writes beyond the Universe tab.
+    """
+    from src.build_universe import build_universe
+    start = time.time()
+    try:
+        config = {}
+        try:
+            config = request.get_json(silent=True) or {}
+        except Exception:
+            pass
+
+        toggles = config.get("toggles", None)
+        baseline_appeal_code = config.get("baseline_appeal_code", None) or None
+        campaign_config = {
+            "campaign_name": config.get("campaign_name", ""),
+            "appeal_code": config.get("appeal_code", ""),
+            "budget_qty_mailed": config.get("budget_qty_mailed", 0),
+            "budget_cost": config.get("budget_cost", 0),
+            "campaign_type": config.get("campaign_type", "Appeal"),
+        }
+        print(f"build-universe config: {campaign_config}, baseline={baseline_appeal_code}")
+
+        result = build_universe(
+            toggles=toggles,
+            baseline_appeal_code=baseline_appeal_code,
+            campaign_config=campaign_config,
+        )
+        duration = time.time() - start
+        result["status"] = "success"
+        result["duration_seconds"] = round(duration, 1)
+        return result, 200
+    except Exception as e:
+        duration = time.time() - start
+        tb = traceback.format_exc()
+        print(f"build-universe ERROR after {duration:.0f}s: {e}\n{tb}")
         return {"status": "error", "message": str(e)}, 500
