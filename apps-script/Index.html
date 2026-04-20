@@ -271,24 +271,24 @@
   <div class="card hidden" id="step-project">
     <h2>Step 3: Scenario Editor</h2>
     <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
-      Load the universe once (~3 min). Then explore any number of scenarios instantly in the browser.
-      Pick a target type, let the solver find the optimal mix, or override per-segment. No waiting.
+      <strong>Start here:</strong> click <strong>Load Universe</strong> (one ~3-min load). Then explore any number of scenarios instantly in the browser —
+      pick a target type, let the solver find the optimal mix, or adjust per-segment. No waiting between scenarios.
     </p>
     <div class="action-bar">
-      <button class="btn btn-primary" id="btn-load-universe" onclick="loadUniverse()">
-        Load Universe
+      <button class="btn btn-primary" id="btn-load-universe" onclick="loadUniverse()" style="font-size:14px;padding:12px 24px">
+        ▶ Load Universe (start here)
       </button>
-      <button class="btn btn-outline" id="btn-project" onclick="runProjection()" title="Legacy — 5-min full pipeline with Draft tab write">
-        Legacy Full Projection
-      </button>
-      <button class="btn btn-outline" onclick="refreshDraft()">
+      <button class="btn btn-outline" onclick="refreshDraft()" title="Reload Draft tab from MIC">
         Refresh Draft Tab
+      </button>
+      <button class="btn btn-outline" id="btn-project" onclick="runProjection()" title="Legacy 5-min full pipeline — use only if scenario editor is unavailable" style="opacity:0.6;font-size:11px;padding:6px 12px">
+        Legacy Full Projection
       </button>
     </div>
     <div id="projection-msg"></div>
 
-    <!-- Target-driven fit panel — appears after universe load -->
-    <div id="target-panel" class="hidden" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
+    <!-- Target-driven fit panel — always visible, enabled after universe loads -->
+    <div id="target-panel" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
       <h3 style="margin-bottom:8px">Target-Driven Fit</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
         <div>
@@ -302,7 +302,7 @@
         </div>
         <div>
           <label style="font-size:11px;color:var(--hri-muted);display:block;margin-bottom:2px" id="target-value-label">Target Qty</label>
-          <input type="number" id="target-value" value="54000" style="width:140px">
+          <input type="number" id="target-value" value="54000" style="width:140px" oninput="updateTargetDisplay()">
         </div>
         <button class="btn btn-gold" onclick="runAutoFit()">Auto-fit to Target</button>
         <div style="flex:1;font-size:13px;color:var(--hri-muted);padding:6px 10px;background:white;border-radius:6px;min-width:250px" id="target-status">
@@ -314,11 +314,16 @@
     <!-- Universe meta -->
     <div id="universe-meta" class="hidden" style="margin-top:12px;font-size:12px;color:var(--hri-muted)"></div>
 
-    <!-- Segment table -->
-    <div id="draft-preview" class="hidden" style="margin-top:16px"></div>
+    <!-- Segment table (loads once Load Universe completes or Refresh Draft succeeds) -->
+    <div id="draft-preview" style="margin-top:16px">
+      <p style="font-size:12px;color:var(--hri-muted);padding:12px;background:white;border:1px dashed var(--hri-border);border-radius:6px;text-align:center">
+        Click <strong>Load Universe</strong> above to begin scenario editing.
+        Segment table, Auto-fit solver, and Save Scenario will activate once the universe is loaded.
+      </p>
+    </div>
 
-    <!-- Scenario comparison panel -->
-    <div id="scenarios-panel" class="hidden" style="margin-top:24px;padding:16px;background:white;border:1px solid var(--hri-border);border-radius:8px">
+    <!-- Scenario comparison panel — always visible -->
+    <div id="scenarios-panel" style="margin-top:24px;padding:16px;background:white;border:1px solid var(--hri-border);border-radius:8px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <h3 style="margin:0">Saved Scenarios</h3>
         <div style="display:flex;gap:8px;align-items:center">
@@ -330,7 +335,7 @@
     </div>
 
     <!-- Approve Scenario & Generate Files action bar -->
-    <div id="approve-scenario-bar" class="hidden" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
+    <div id="approve-scenario-bar" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
       <h3 style="margin-bottom:8px">Approve Current Scenario & Generate Files</h3>
       <p style="font-size:12px;color:var(--hri-muted);margin-bottom:12px">
         When satisfied with the current scenario, click below. The server re-runs the waterfall deterministically,
@@ -440,6 +445,12 @@
   window.addEventListener('load', function() {
     loadCampaigns();
     renderToggles();
+    // Render empty states for the scenario editor so the operator sees the full workflow
+    renderScenariosList();
+    // Initialize target display from default values
+    if (document.getElementById('target-type')) {
+      onTargetTypeChange();
+    }
   });
 
   function loadCampaigns() {
