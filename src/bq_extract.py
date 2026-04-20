@@ -229,6 +229,21 @@ def run_nightly_extract():
         f"SELECT COUNT(*) AS n FROM `{BQ_ACCOUNTS_FINAL}` WHERE has_dm_gift_500 = TRUE"
     ).result())[0].n
 
+    # --- Rebuild Historical Baseline grid from Scorecard data on MIC ---
+    logger.info("Step 4: Rebuilding historical_baseline table...")
+    t0 = time.time()
+    baseline_summary = {}
+    try:
+        from sheets_client import get_sheets_client
+        from historical_baseline import rebuild_and_publish
+        baseline_summary = rebuild_and_publish(get_sheets_client())
+        timings["historical_baseline"] = round(time.time() - t0, 1)
+        logger.info(f"  Historical baseline: {baseline_summary.get('rows')} rows")
+    except Exception as e:
+        timings["historical_baseline"] = round(time.time() - t0, 1)
+        logger.exception(f"  Historical baseline rebuild failed: {e}")
+        baseline_summary = {"error": str(e)}
+
     total_time = sum(timings.values())
     logger.info("=" * 60)
     logger.info(f"EXTRACT COMPLETE — {total_time:.0f}s total")
@@ -244,6 +259,7 @@ def run_nightly_extract():
         "accounts_final": final_rows,
         "is_cbnc_count": cbnc_count,
         "has_dm_gift_500_count": dm500_count,
+        "historical_baseline": baseline_summary,
         "timings": timings,
         "total_seconds": round(total_time, 1),
     }

@@ -130,6 +130,29 @@ def build_universe_endpoint(request):
 
 
 @functions_framework.http
+def rebuild_historical_baseline_endpoint(request):
+    """Rebuild the sf_cache.historical_baseline table on demand.
+
+    Normally the nightly SF extract also refreshes this — this endpoint is
+    for ad-hoc rebuilds after Scorecard data changes.
+    """
+    from src.sheets_client import get_sheets_client
+    from src.historical_baseline import rebuild_and_publish
+    start = time.time()
+    try:
+        summary = rebuild_and_publish(get_sheets_client())
+        return {
+            "status": "success",
+            "duration_seconds": round(time.time() - start, 1),
+            **summary,
+        }, 200
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"rebuild-historical-baseline ERROR: {e}\n{tb}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+@functions_framework.http
 def approve_scenario_endpoint(request):
     """Phase 3 of scenario editor — approve a scenario and generate outputs.
 
