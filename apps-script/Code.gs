@@ -43,6 +43,46 @@ function getCloudRunToken_(audience) {
 
 
 /**
+ * Phase 3 — call /approve-scenario endpoint with operator's scenario selections.
+ * Generates Printer/Matchback files, writes to Drive + MIC, sets status → Approved.
+ */
+function approveScenario(payload) {
+  try {
+    const token = getCloudRunToken_(APPROVE_SCENARIO_URL);
+    const response = UrlFetchApp.fetch(APPROVE_SCENARIO_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+
+    if (code === 401 || code === 403) {
+      return { error: 'Approve auth failed (HTTP ' + code + ').' };
+    }
+    if (body.charAt(0) !== '{' && body.charAt(0) !== '[') {
+      return { error: 'Approve endpoint returned HTTP ' + code + '. Check logs.' };
+    }
+    const result = JSON.parse(body);
+    if (code !== 200) {
+      return { error: 'Approve error (HTTP ' + code + '): ' + (result.message || body.substring(0, 200)) };
+    }
+    return result;
+  } catch (e) {
+    if (e.message && (e.message.indexOf('Timeout') >= 0 || e.message.indexOf('timed out') >= 0)) {
+      return { status: 'running', message: 'Approve running in background (~6 min). Check Drive folder when done.' };
+    }
+    throw e;
+  }
+}
+
+
+/**
  * Phase 1 — call /build-universe endpoint, return universe JSON to browser.
  */
 function buildUniverse(campaignConfig) {

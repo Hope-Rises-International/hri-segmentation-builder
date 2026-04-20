@@ -127,3 +127,53 @@ def build_universe_endpoint(request):
         tb = traceback.format_exc()
         print(f"build-universe ERROR after {duration:.0f}s: {e}\n{tb}")
         return {"status": "error", "message": str(e)}, 500
+
+
+@functions_framework.http
+def approve_scenario_endpoint(request):
+    """Phase 3 of scenario editor — approve a scenario and generate outputs.
+
+    Receives {campaign, baseline_appeal_code, toggles, scenario} from browser.
+    Runs full pipeline (waterfall + suppression + baseline + budget fit with
+    scenario overrides + ask strings + appeal codes + output files) and
+    writes to Drive + MIC. Updates campaign status to Approved.
+    """
+    from src.approve_scenario import approve_scenario
+    start = time.time()
+    try:
+        config = {}
+        try:
+            config = request.get_json(silent=True) or {}
+        except Exception:
+            pass
+
+        campaign_config = config.get("campaign") or {
+            "campaign_name": config.get("campaign_name", ""),
+            "appeal_code": config.get("appeal_code", ""),
+            "budget_qty_mailed": config.get("budget_qty_mailed", 0),
+            "budget_cost": config.get("budget_cost", 0),
+            "campaign_type": config.get("campaign_type", "Appeal"),
+            "lane": config.get("lane", "Housefile"),
+        }
+        scenario = config.get("scenario") or {}
+        toggles = config.get("toggles", None)
+        baseline_appeal_code = config.get("baseline_appeal_code", None) or None
+
+        print(f"approve-scenario: campaign={campaign_config.get('appeal_code')}, "
+              f"scenario={scenario.get('name','unnamed')}, "
+              f"overrides={len(scenario.get('segments',[]))}")
+
+        result = approve_scenario(
+            campaign_config=campaign_config,
+            scenario=scenario,
+            toggles=toggles,
+            baseline_appeal_code=baseline_appeal_code,
+        )
+        duration = time.time() - start
+        result["duration_seconds"] = round(duration, 1)
+        return result, 200
+    except Exception as e:
+        duration = time.time() - start
+        tb = traceback.format_exc()
+        print(f"approve-scenario ERROR after {duration:.0f}s: {e}\n{tb}")
+        return {"status": "error", "message": str(e)}, 500

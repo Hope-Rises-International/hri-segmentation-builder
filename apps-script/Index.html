@@ -328,6 +328,23 @@
       </div>
       <div id="scenarios-list"></div>
     </div>
+
+    <!-- Approve Scenario & Generate Files action bar -->
+    <div id="approve-scenario-bar" class="hidden" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
+      <h3 style="margin-bottom:8px">Approve Current Scenario & Generate Files</h3>
+      <p style="font-size:12px;color:var(--hri-muted);margin-bottom:12px">
+        When satisfied with the current scenario, click below. The server re-runs the waterfall deterministically,
+        applies your segment overrides, generates the Printer File + Matchback File + suppression audit log to Drive,
+        writes Segment Detail to the MIC, and sets campaign status to <strong>Approved</strong>.
+        Takes ~6 minutes. All subsequent scenario edits are still instant.
+      </p>
+      <div class="action-bar">
+        <button class="btn btn-gold" id="btn-approve-scenario" onclick="approveCurrentScenario()">
+          Approve & Generate Files
+        </button>
+      </div>
+      <div id="approve-scenario-msg"></div>
+    </div>
   </div>
 
   <!-- Step 4: Approve + Generate -->
@@ -814,6 +831,7 @@
     show('target-panel');
     show('draft-preview');
     show('scenarios-panel');
+    show('approve-scenario-bar');
     show('step-approve');
     show('step-files');
     show('step-actuals');
@@ -945,6 +963,81 @@
     var net = rev - cost;
     var roi = cost > 0 ? rev / cost : 0;
     return { qty: qty, cost: cost, rev: rev, net: net, roi: roi };
+  }
+
+  // --- Approve Current Scenario (Phase 3) ---
+  function approveCurrentScenario() {
+    if (!universe || !selectedCampaign) {
+      showMsg('approve-scenario-msg', 'error', 'Load a universe first, then approve.');
+      return;
+    }
+    var btn = document.getElementById('btn-approve-scenario');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Approving...';
+    showMsg('approve-scenario-msg', 'info',
+      'Approving current scenario... ~6 min. Files will appear in Drive. Do not close this tab.');
+
+    var scenario = {
+      name: (document.getElementById('scenario-name').value || '').trim() || 'Current',
+      target_type: document.getElementById('target-type').value,
+      target_value: Number(document.getElementById('target-value').value || 0),
+      segments: draftSegments.map(function(s) {
+        return { code: s.code, include: s.include, percent: s.percent };
+      }),
+    };
+
+    var payload = {
+      campaign: {
+        campaign_name: selectedCampaign.campaign_name,
+        appeal_code: selectedCampaign.appeal_code,
+        budget_qty_mailed: selectedCampaign.budget_qty_mailed,
+        budget_cost: selectedCampaign.budget_cost,
+        campaign_type: selectedCampaign.campaign_type,
+        lane: selectedCampaign.lane || 'Housefile',
+      },
+      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      toggles: getToggles(),
+      scenario: scenario,
+    };
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.innerHTML = 'Approve & Generate Files';
+        if (result && result.error) {
+          showMsg('approve-scenario-msg', 'error', result.error);
+          return;
+        }
+        if (result && result.status === 'running') {
+          showMsg('approve-scenario-msg', 'info',
+            'Approve running in background. Check Drive folder in a few minutes for output files.');
+          return;
+        }
+        var urls = (result && result.drive_urls) || {};
+        var counts = (result && result.counts) || {};
+        var msg =
+          '<strong>Approved!</strong> Campaign ' + (selectedCampaign.appeal_code || '') +
+          ' status → Approved. ' +
+          'Printer: ' + fmt(counts.printer_rows || 0) + ' rows. ' +
+          'Matchback: ' + fmt(counts.matchback_rows || 0) + ' rows. ' +
+          'Trimmed: ' + fmt(counts.trimmed || 0) + '. ' +
+          (urls.printer ? '<br><a href="' + urls.printer + '" target="_blank">Printer File</a> &middot; ' : '') +
+          (urls.matchback ? '<a href="' + urls.matchback + '" target="_blank">Matchback File</a> &middot; ' : '') +
+          (urls.audit ? '<a href="' + urls.audit + '" target="_blank">Suppression Audit</a>' : '');
+        showMsg('approve-scenario-msg', 'success', msg);
+      })
+      .withFailureHandler(function(e) {
+        btn.disabled = false;
+        btn.innerHTML = 'Approve & Generate Files';
+        var m = String(e);
+        if (m.indexOf('Timeout') >= 0 || m.indexOf('timed out') >= 0 || m.indexOf('deadline') >= 0) {
+          showMsg('approve-scenario-msg', 'info',
+            'Approve running in background (~6 min). Files appear in Drive when complete.');
+        } else {
+          showMsg('approve-scenario-msg', 'error', 'Approve failed: ' + m);
+        }
+      })
+      .approveScenario(payload);
   }
 
   // --- Scenario Save / Compare ---
