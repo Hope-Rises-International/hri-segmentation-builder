@@ -265,27 +265,32 @@
     <div class="toggle-grid" id="waterfall-toggles"></div>
     <h3>Suppression Rules</h3>
     <div class="toggle-grid" id="suppression-toggles"></div>
+
+    <!-- Final action of Step 2: load the universe for the scenario editor -->
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--hri-border)">
+      <p style="font-size:13px;color:var(--hri-muted);margin-bottom:10px">
+        When configuration is complete, load the universe. This runs the waterfall + suppression once
+        (~3 min) and hands off to the Scenario Editor below for instant browser-side editing.
+      </p>
+      <div class="action-bar">
+        <button class="btn btn-primary" id="btn-load-universe" onclick="loadUniverse()" style="font-size:14px;padding:12px 24px">
+          ▶ Load Universe
+        </button>
+        <button class="btn btn-outline" onclick="refreshDraft()" title="Reload Draft tab from MIC">
+          Refresh Draft Tab
+        </button>
+      </div>
+      <div id="projection-msg"></div>
+    </div>
   </div>
 
   <!-- Step 3: Scenario Editor -->
   <div class="card hidden" id="step-project">
     <h2>Step 3: Scenario Editor</h2>
     <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
-      <strong>Start here:</strong> click <strong>Load Universe</strong> (one ~3-min load). Then explore any number of scenarios instantly in the browser —
-      pick a target type, let the solver find the optimal mix, or adjust per-segment. No waiting between scenarios.
+      Pick a target type, let the solver find the optimal mix, or adjust per-segment. All recalculation is instant
+      — no server round-trips. Save scenarios to compare side-by-side.
     </p>
-    <div class="action-bar">
-      <button class="btn btn-primary" id="btn-load-universe" onclick="loadUniverse()" style="font-size:14px;padding:12px 24px">
-        ▶ Load Universe (start here)
-      </button>
-      <button class="btn btn-outline" onclick="refreshDraft()" title="Reload Draft tab from MIC">
-        Refresh Draft Tab
-      </button>
-      <button class="btn btn-outline" id="btn-project" onclick="runProjection()" title="Legacy 5-min full pipeline — use only if scenario editor is unavailable" style="opacity:0.6;font-size:11px;padding:6px 12px">
-        Legacy Full Projection
-      </button>
-    </div>
-    <div id="projection-msg"></div>
 
     <!-- Target-driven fit panel — always visible, enabled after universe loads -->
     <div id="target-panel" style="margin-top:20px;padding:16px;background:var(--hri-light);border-radius:8px">
