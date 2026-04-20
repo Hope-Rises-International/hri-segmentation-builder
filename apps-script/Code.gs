@@ -170,12 +170,15 @@ function getCampaigns() {
     const cpp = budgetQty > 0 ? (budgetCost / budgetQty) : 0;
     const status = String(row[col['status']] || 'Draft');
 
+    var campaignName = String(row[col['campaign_name']] || '');
+    var laneVal = String(row[col['lane']] || '');
+    var isFollowupStr = String(row[col['is_followup']] || '');
     campaigns.push({
       row: i + 1, // 1-indexed sheet row
-      campaign_name: String(row[col['campaign_name']] || ''),
+      campaign_name: campaignName,
       appeal_code: String(row[col['appeal_code']] || ''),
       mail_date: String(row[col['mail_date']] || ''),
-      lane: String(row[col['lane']] || ''),
+      lane: laneVal,
       audience: String(row[col['audience']] || ''),
       budget_qty_mailed: budgetQty,
       budget_cost: budgetCost,
@@ -183,9 +186,10 @@ function getCampaigns() {
       projected_revenue: Number(row[col['projected_revenue']] || 0),
       status: status,
       campaign_type: String(row[col['classification']] || 'Appeal'),
+      historical_type: classifyCampaignType_(campaignName, laneVal, isFollowupStr),
       fiscal_year: String(row[col['fiscal_year']] || ''),
       month: String(row[col['month']] || ''),
-      is_followup: String(row[col['is_followup']] || '') === 'true',
+      is_followup: isFollowupStr === 'true' || isFollowupStr === 'TRUE',
     });
   }
 
@@ -268,6 +272,73 @@ function getBaselineCampaigns() {
   // Sort by mail_date descending (most recent first), then FY
   baselines.sort((a, b) => b.mail_date.localeCompare(a.mail_date) || b.fy.localeCompare(a.fy));
   return { baselines: baselines };
+}
+
+
+/**
+ * Return the set of campaign-type baselines available from
+ * sf_cache.historical_baseline. Static list — kept in sync with
+ * src/campaign_types.py (ALL_TYPES). The backend silently falls back
+ * to 'Overall' for any (type, segment) combination without data.
+ */
+function getHistoricalBaselineTypes() {
+  return {
+    types: [
+      // Base types
+      'Shipping', 'Tax Receipt', 'Year End', 'Easter', 'Renewal',
+      'Faith Leaders', 'Shoes', 'Whole Person Healing', 'FYE',
+      // Chaser variants
+      'Shipping Chaser', 'Tax Receipt Chaser', 'Year End Chaser',
+      'Easter Chaser', 'Renewal Chaser', 'Faith Leaders Chaser',
+      'Shoes Chaser', 'Whole Person Healing Chaser', 'FYE Chaser',
+      // Lane-based
+      'Newsletter', 'Acquisition',
+      // Catch-all
+      'Other',
+      // Meta-average across all non-Acquisition types
+      'Overall',
+    ],
+  };
+}
+
+
+/**
+ * Classify a campaign name + is_followup into one of the types
+ * returned by getHistoricalBaselineTypes. Mirrors the order-sensitive
+ * logic in src/campaign_types.py — MUST stay in sync.
+ * Chaser variants are tested before base type match.
+ */
+function classifyCampaignType_(campaignName, lane, isFollowup) {
+  var name = String(campaignName || '');
+  var nameLc = name.toLowerCase();
+  var chaser = false;
+  var fu = String(isFollowup || '').toUpperCase();
+  if (fu === 'TRUE' || fu === '1' || fu === 'YES') chaser = true;
+  if (!chaser && /\bchaser\b|\bf\/u\b|\bfu\b/i.test(name)) chaser = true;
+
+  var baseTypes = [
+    ['Shipping',              'shipping'],
+    ['Tax Receipt',           'tax receipt'],
+    ['Year End',              'year end'],
+    ['Easter',                'easter'],
+    ['Renewal',               'renewal'],
+    ['Faith Leaders',         'faith leaders'],
+    ['Shoes',                 'shoes'],
+    ['Whole Person Healing',  'whole person healing'],
+  ];
+  for (var i = 0; i < baseTypes.length; i++) {
+    if (nameLc.indexOf(baseTypes[i][1]) >= 0) {
+      return chaser ? baseTypes[i][0] + ' Chaser' : baseTypes[i][0];
+    }
+  }
+  if (nameLc.indexOf('fye') >= 0 || nameLc.indexOf('fiscal year end') >= 0) {
+    return chaser ? 'FYE Chaser' : 'FYE';
+  }
+
+  var laneVal = String(lane || '').trim();
+  if (laneVal === 'Newsletter')  return 'Newsletter';
+  if (laneVal === 'Acquisition') return 'Acquisition';
+  return 'Other';
 }
 
 

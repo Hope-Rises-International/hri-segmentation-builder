@@ -38,6 +38,7 @@ from appeal_codes import generate_appeal_codes, validate_appeal_codes
 from output_files import generate_output_files
 from mic_writeback import PipelineWriteRecovery
 from baseline_rollup import build_baseline_rollup, apply_baseline_to_summary
+from historical_baseline import fetch_baseline_for_type
 from sheets_client import get_sheets_client, read_campaign_calendar
 from config import MIC_SHEET_ID, MIC_CAMPAIGN_CALENDAR_TAB
 
@@ -49,6 +50,7 @@ def approve_scenario(
     scenario: dict,
     toggles: dict = None,
     baseline_appeal_code: str = None,
+    baseline_type: str = None,
 ) -> dict:
     """Apply a scenario to the universe and generate final outputs.
 
@@ -155,8 +157,20 @@ def approve_scenario(
     )
 
     # --- Step 8: Apply baseline economics if selected ---
+    # baseline_type takes priority over baseline_appeal_code.
     gc = get_sheets_client()
-    if baseline_appeal_code:
+    if baseline_type:
+        t0 = time.time()
+        rows = fetch_baseline_for_type(baseline_type)
+        baseline_df = pd.DataFrame([
+            {"hri_segment": seg,
+             "response_rate": r["response_rate"],
+             "avg_gift":      r["avg_gift"]}
+            for seg, r in rows.items()
+        ])
+        segment_summary = apply_baseline_to_summary(segment_summary, baseline_df, cpp)
+        timings["baseline"] = round(time.time() - t0, 1)
+    elif baseline_appeal_code:
         t0 = time.time()
         baseline_df = build_baseline_rollup(gc, baseline_appeal_code)
         segment_summary = apply_baseline_to_summary(segment_summary, baseline_df, cpp)

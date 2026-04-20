@@ -242,14 +242,37 @@
     </select>
     <div id="campaign-info" class="campaign-info hidden"></div>
     <div id="baseline-section" class="hidden" style="margin-top:16px">
-      <label style="font-size:12px;color:var(--hri-muted);display:block;margin-bottom:4px">
-        Compare to baseline campaign (optional)
+      <label style="font-size:12px;color:var(--hri-muted);display:block;margin-bottom:6px">
+        Baseline Source
       </label>
-      <select id="baseline-select" style="max-width:500px">
-        <option value="">No baseline — economics columns will show "No baseline"</option>
-      </select>
-      <div style="font-size:11px;color:var(--hri-muted);margin-top:4px">
-        Populates Hist. Response Rate and Hist. Avg Gift from prior campaign actuals
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="radio" name="baseline-mode" value="type" checked onchange="onBaselineModeChange()">
+          Campaign Type (pro-forma, multi-campaign average)
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="radio" name="baseline-mode" value="specific" onchange="onBaselineModeChange()">
+          Specific Prior Campaign
+        </label>
+      </div>
+
+      <div id="baseline-type-wrap" style="max-width:500px">
+        <select id="baseline-type-select" style="max-width:500px">
+          <option value="">Loading types...</option>
+        </select>
+        <div style="font-size:11px;color:var(--hri-muted);margin-top:4px" id="baseline-type-hint">
+          Weighted average across qualifying historical campaigns of this type.
+          Missing (type, segment) combinations silently fall back to Overall.
+        </div>
+      </div>
+
+      <div id="baseline-specific-wrap" class="hidden" style="max-width:500px">
+        <select id="baseline-select" style="max-width:500px">
+          <option value="">No baseline — economics columns will show "No baseline"</option>
+        </select>
+        <div style="font-size:11px;color:var(--hri-muted);margin-top:4px">
+          Populates Hist. Response Rate and Hist. Avg Gift from a single prior campaign's actuals.
+        </div>
       </div>
     </div>
     <div id="campaign-msg"></div>
@@ -524,6 +547,9 @@
     // Show baseline selector and load options
     show('baseline-section');
     loadBaselineCampaigns();
+    loadBaselineTypes();
+    autoPopulateBaselineType(c.historical_type);
+    onBaselineModeChange();
 
     // Show appropriate steps based on status
     show('step-toggles');
@@ -546,6 +572,85 @@
 
     refreshDraft();
   }
+
+  // --- Baseline: mode toggle + type / specific selection ---
+  function currentBaselineMode() {
+    var radios = document.getElementsByName('baseline-mode');
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) return radios[i].value;
+    }
+    return 'type';
+  }
+
+  function onBaselineModeChange() {
+    var mode = currentBaselineMode();
+    var typeWrap = document.getElementById('baseline-type-wrap');
+    var specWrap = document.getElementById('baseline-specific-wrap');
+    if (mode === 'type') {
+      typeWrap.classList.remove('hidden');
+      specWrap.classList.add('hidden');
+    } else {
+      typeWrap.classList.add('hidden');
+      specWrap.classList.remove('hidden');
+    }
+    try { localStorage.setItem('hri_baseline_mode', mode); } catch (e) {}
+  }
+
+  function loadBaselineTypes() {
+    if (typeof google === 'undefined') return;
+    google.script.run
+      .withSuccessHandler(function(result) {
+        var sel = document.getElementById('baseline-type-select');
+        sel.innerHTML = '';
+        (result.types || []).forEach(function(t) {
+          var opt = document.createElement('option');
+          opt.value = t;
+          opt.text = t;
+          sel.appendChild(opt);
+        });
+        // Prefer auto-populated type if set, else localStorage, else 'Overall'
+        var preferred = window._autoBaselineType ||
+          (function() {
+            try { return localStorage.getItem('hri_baseline_type') || 'Overall'; }
+            catch (e) { return 'Overall'; }
+          })();
+        for (var i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === preferred) { sel.selectedIndex = i; break; }
+        }
+        sel.onchange = function() {
+          try { localStorage.setItem('hri_baseline_type', sel.value); } catch (e) {}
+        };
+      })
+      .getHistoricalBaselineTypes();
+  }
+
+  // Auto-populate baseline type when a campaign is selected. Call from onCampaignSelect.
+  function autoPopulateBaselineType(historicalType) {
+    if (!historicalType) return;
+    window._autoBaselineType = historicalType;
+    var sel = document.getElementById('baseline-type-select');
+    if (!sel || sel.options.length === 0) return;
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === historicalType) {
+        sel.selectedIndex = i;
+        try { localStorage.setItem('hri_baseline_type', historicalType); } catch (e) {}
+        return;
+      }
+    }
+  }
+
+  // Restore mode radio from localStorage on first load
+  (function restoreBaselineMode() {
+    try {
+      var m = localStorage.getItem('hri_baseline_mode');
+      if (m === 'specific') {
+        var radios = document.getElementsByName('baseline-mode');
+        for (var i = 0; i < radios.length; i++) {
+          if (radios[i].value === 'specific') { radios[i].checked = true; break; }
+        }
+      }
+    } catch (e) {}
+  })();
 
   // --- Baseline Campaigns ---
   function loadBaselineCampaigns() {
@@ -643,7 +748,8 @@
       budget_qty_mailed: selectedCampaign.budget_qty_mailed,
       budget_cost: selectedCampaign.budget_cost,
       campaign_type: selectedCampaign.campaign_type,
-      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      baseline_appeal_code: currentBaselineMode() === 'specific' ? (document.getElementById('baseline-select').value || '') : '',
+      baseline_type: currentBaselineMode() === 'type' ? (document.getElementById('baseline-type-select').value || '') : '',
       toggles: getToggles(),
     };
 
@@ -687,7 +793,8 @@
       budget_qty_mailed: selectedCampaign.budget_qty_mailed,
       budget_cost: selectedCampaign.budget_cost,
       campaign_type: selectedCampaign.campaign_type,
-      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      baseline_appeal_code: currentBaselineMode() === 'specific' ? (document.getElementById('baseline-select').value || '') : '',
+      baseline_type: currentBaselineMode() === 'type' ? (document.getElementById('baseline-type-select').value || '') : '',
       toggles: getToggles(),
       segment_overrides: getSegmentOverrides(),
     };
@@ -774,7 +881,8 @@
       budget_qty_mailed: selectedCampaign.budget_qty_mailed,
       budget_cost: selectedCampaign.budget_cost,
       campaign_type: selectedCampaign.campaign_type,
-      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      baseline_appeal_code: currentBaselineMode() === 'specific' ? (document.getElementById('baseline-select').value || '') : '',
+      baseline_type: currentBaselineMode() === 'type' ? (document.getElementById('baseline-type-select').value || '') : '',
       toggles: getToggles(),
     };
 
@@ -819,6 +927,7 @@
       'Universe: <strong>' + fmt(result.meta.total_donors) + '</strong> donors · ' +
       'CPP: <strong>$' + result.meta.cpp.toFixed(2) + '</strong> · ' +
       'Source: <strong>' + result.meta.data_source + '</strong> · ' +
+      'Baseline: <strong>' + formatBaselineLabel(result) + '</strong> · ' +
       'Built in ' + result.meta.total_seconds + 's';
     show('universe-meta');
 
@@ -838,6 +947,7 @@
         net: s.proj_net_revenue,
         net_per_contact: s.net_per_contact,
         roi: s.roi,
+        confidence: s.baseline_confidence || '',
         status: 'Include',
         include: true,
         percent: 100,
@@ -1011,7 +1121,8 @@
         campaign_type: selectedCampaign.campaign_type,
         lane: selectedCampaign.lane || 'Housefile',
       },
-      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      baseline_appeal_code: currentBaselineMode() === 'specific' ? (document.getElementById('baseline-select').value || '') : '',
+      baseline_type: currentBaselineMode() === 'type' ? (document.getElementById('baseline-type-select').value || '') : '',
       toggles: getToggles(),
       scenario: scenario,
     };
@@ -1212,7 +1323,7 @@
       html += '<tr' + rowStyle + '>' +
         '<td><input type="checkbox" ' + includeChecked + ' onchange="onSegmentInclude(' + i + ', this.checked)"></td>' +
         '<td>' + s.code + '</td>' +
-        '<td>' + s.name + '</td>' +
+        '<td>' + s.name + confidenceBadge(s.confidence) + '</td>' +
         '<td class="num">' + fmt(s.qty) + '</td>' +
         '<td class="num"><input type="number" min="1" max="100" value="' + s.percent +
           '" style="width:50px;text-align:right;font-size:12px;padding:2px 4px" ' +
@@ -1291,7 +1402,8 @@
       budget_qty_mailed: selectedCampaign.budget_qty_mailed,
       budget_cost: selectedCampaign.budget_cost,
       campaign_type: selectedCampaign.campaign_type,
-      baseline_appeal_code: document.getElementById('baseline-select').value || '',
+      baseline_appeal_code: currentBaselineMode() === 'specific' ? (document.getElementById('baseline-select').value || '') : '',
+      baseline_type: currentBaselineMode() === 'type' ? (document.getElementById('baseline-type-select').value || '') : '',
       toggles: getToggles(),
       segment_overrides: overrides,
     };
@@ -1450,6 +1562,28 @@
 
   // --- Helpers ---
   function fmt(n) { return Number(n || 0).toLocaleString(); }
+  function formatBaselineLabel(result) {
+    var bl = result.baseline || {};
+    if (bl.mode === 'campaign_type' && bl.type) {
+      return bl.type + ' (multi-campaign avg)';
+    }
+    if (bl.mode === 'specific_campaign' && bl.appeal_code) {
+      return bl.appeal_code + ' (single campaign)';
+    }
+    return 'none';
+  }
+  function confidenceBadge(c) {
+    if (!c) return '';
+    var color = c === 'high'     ? '#137a3d' :
+                c === 'proxy'    ? '#a06b00' :
+                c === 'estimate' ? '#a66200' :
+                c === 'fallback' ? '#6c757d' :
+                c === 'specific' ? '#1c63a6' : '#6c757d';
+    return '<span style="display:inline-block;padding:1px 6px;border-radius:4px;' +
+           'background:' + color + '20;color:' + color + ';font-size:10px;' +
+           'font-weight:600;margin-left:4px" title="Baseline confidence">' +
+           c + '</span>';
+  }
   function formatBytes(b) {
     if (b < 1024) return b + ' B';
     if (b < 1048576) return (b/1024).toFixed(1) + ' KB';

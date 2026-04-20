@@ -104,6 +104,7 @@ def build_universe_endpoint(request):
 
         toggles = config.get("toggles", None)
         baseline_appeal_code = config.get("baseline_appeal_code", None) or None
+        baseline_type = config.get("baseline_type", None) or None
         campaign_config = {
             "campaign_name": config.get("campaign_name", ""),
             "appeal_code": config.get("appeal_code", ""),
@@ -111,11 +112,13 @@ def build_universe_endpoint(request):
             "budget_cost": config.get("budget_cost", 0),
             "campaign_type": config.get("campaign_type", "Appeal"),
         }
-        print(f"build-universe config: {campaign_config}, baseline={baseline_appeal_code}")
+        print(f"build-universe config: {campaign_config}, "
+              f"baseline_type={baseline_type}, baseline_code={baseline_appeal_code}")
 
         result = build_universe(
             toggles=toggles,
             baseline_appeal_code=baseline_appeal_code,
+            baseline_type=baseline_type,
             campaign_config=campaign_config,
         )
         duration = time.time() - start
@@ -181,16 +184,19 @@ def approve_scenario_endpoint(request):
         scenario = config.get("scenario") or {}
         toggles = config.get("toggles", None)
         baseline_appeal_code = config.get("baseline_appeal_code", None) or None
+        baseline_type = config.get("baseline_type", None) or None
 
         print(f"approve-scenario: campaign={campaign_config.get('appeal_code')}, "
               f"scenario={scenario.get('name','unnamed')}, "
-              f"overrides={len(scenario.get('segments',[]))}")
+              f"overrides={len(scenario.get('segments',[]))}, "
+              f"baseline_type={baseline_type}, baseline_code={baseline_appeal_code}")
 
         result = approve_scenario(
             campaign_config=campaign_config,
             scenario=scenario,
             toggles=toggles,
             baseline_appeal_code=baseline_appeal_code,
+            baseline_type=baseline_type,
         )
         duration = time.time() - start
         result["duration_seconds"] = round(duration, 1)

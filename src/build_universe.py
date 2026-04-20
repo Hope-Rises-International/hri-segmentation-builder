@@ -28,6 +28,7 @@ from waterfall_engine import run_waterfall, build_segment_summary
 from suppression_engine import apply_tier2_suppression
 from sheets_client import get_sheets_client, read_campaign_calendar
 from baseline_rollup import build_baseline_rollup
+from historical_baseline import fetch_baseline_for_type
 from config import MIC_SHEET_ID
 
 logger = logging.getLogger(__name__)
@@ -53,19 +54,26 @@ UNIVERSE_FIELDS = [
 ]
 
 
-def build_universe(toggles=None, baseline_appeal_code=None, campaign_config=None):
+def build_universe(toggles=None, baseline_appeal_code=None,
+                   baseline_type=None, campaign_config=None):
     """Run waterfall + suppression + baseline → universe dataset.
 
     Args:
         toggles: waterfall/suppression toggle overrides.
-        baseline_appeal_code: prior campaign for per-donor baseline economics.
+        baseline_appeal_code: specific prior campaign as baseline (legacy path).
+        baseline_type: campaign-type baseline from sf_cache.historical_baseline
+            (e.g., "Shipping", "Tax Receipt", "Overall"). Preferred over
+            baseline_appeal_code when both are supplied — the type-based
+            baseline is the new default.
         campaign_config: dict with campaign_name, appeal_code, target_qty, etc.
 
     Returns:
         dict with:
             - donors: list of donor dicts (~70K)
-            - segments: per-segment aggregates (qty, hist_rr, hist_avg_gift, cpp, etc.)
+            - segments: per-segment aggregates (qty, hist_rr, hist_avg_gift, cpp,
+              plus baseline_confidence per segment)
             - campaign: campaign metadata
+            - baseline: mode + identifier + per-segment confidence
             - meta: timings, counts, source
     """
     timings = {}
@@ -128,21 +136,55 @@ def build_universe(toggles=None, baseline_appeal_code=None, campaign_config=None
     # --- Step 5: Build segment summary (used for per-segment aggregates) ---
     segment_summary = build_segment_summary(waterfall_result)
 
-    # --- Step 6: Baseline rollup → per-segment historical economics ---
+    # --- Step 6: Baseline → per-segment historical economics ---
+    # Two modes:
+    #   (a) baseline_type — multi-campaign average from historical_baseline (default)
+    #   (b) baseline_appeal_code — single-campaign rollup from Segment Actuals (legacy)
+    # If both are supplied, baseline_type wins.
     gc = get_sheets_client()
     baseline_by_segment = {}
-    if baseline_appeal_code:
+    baseline_info = {"mode": "none"}
+    if baseline_type:
+        t0 = time.time()
+        try:
+            rows = fetch_baseline_for_type(baseline_type)
+        except Exception as e:
+            logger.warning(f"  fetch_baseline_for_type failed: {e}")
+            rows = {}
+        timings["baseline"] = round(time.time() - t0, 1)
+        for seg_code, r in rows.items():
+            baseline_by_segment[seg_code] = {
+                "response_rate":          float(r["response_rate"]),
+                "avg_gift":               float(r["avg_gift"]),
+                "confidence":             r["confidence"],
+                "net_revenue_per_contact": float(r["response_rate"]) * float(r["avg_gift"]),
+            }
+        baseline_info = {
+            "mode":     "campaign_type",
+            "type":     baseline_type,
+            "segments": len(baseline_by_segment),
+        }
+        logger.info(f"[{_elapsed()}s] Baseline (type={baseline_type}): "
+                    f"{len(baseline_by_segment)} segments")
+    elif baseline_appeal_code:
         t0 = time.time()
         baseline_df = build_baseline_rollup(gc, baseline_appeal_code)
         timings["baseline"] = round(time.time() - t0, 1)
         if not baseline_df.empty:
             for _, r in baseline_df.iterrows():
                 baseline_by_segment[r["hri_segment"]] = {
-                    "response_rate": float(r["response_rate"]),
-                    "avg_gift": float(r["avg_gift"]),
+                    "response_rate":           float(r["response_rate"]),
+                    "avg_gift":                float(r["avg_gift"]),
+                    "confidence":              "specific",
                     "net_revenue_per_contact": float(r["avg_gift"]) * float(r["response_rate"]),
                 }
-        logger.info(f"[{_elapsed()}s] Baseline: {len(baseline_by_segment)} segments mapped")
+        baseline_info = {
+            "mode":          "specific_campaign",
+            "appeal_code":   baseline_appeal_code,
+            "segments":      len(baseline_by_segment),
+        }
+        logger.info(f"[{_elapsed()}s] Baseline (campaign={baseline_appeal_code}): "
+                    f"{len(baseline_by_segment)} segments")
 
     # --- Step 7: CPP from campaign config ---
     cpp = 0.48
@@ -168,6 +210,7 @@ def build_universe(toggles=None, baseline_appeal_code=None, campaign_config=None
             "total_cost": round(total_cost, 2),
             "hist_response_rate": round(rr, 4),
             "hist_avg_gift": round(avg_gift, 2),
+            "baseline_confidence": bl.get("confidence", ""),
             "proj_gross_revenue": round(proj_gross, 2),
             "proj_net_revenue": round(proj_net, 2),
             "net_per_contact": round(rr * avg_gift - cpp, 4),  # For greedy solver
@@ -255,6 +298,8 @@ def build_universe(toggles=None, baseline_appeal_code=None, campaign_config=None
         "segments": segment_aggregates,
         "campaign": campaign_config,
         "baseline_appeal_code": baseline_appeal_code or "",
+        "baseline_type": baseline_type or "",
+        "baseline": baseline_info,
         "meta": {
             "data_source": data_source,
             "cpp": round(cpp, 4),
