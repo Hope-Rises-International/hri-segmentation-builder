@@ -52,7 +52,11 @@ MIN_CAMPAIGNS_FOR_HIGH = 3    # <3 contributing campaigns → "estimate" confide
 # better than its proxy LR01).
 PROXY_SEGMENTS = {
     "CS01": {
-        "sources":     ["AH01", "AH04"],   # high-retention, high-value actives
+        # Bill 2026-04-20: AH01+AH04 proxy ran too hot (~5.2% RR on Shipping).
+        # Cornerstone response patterns look closer to 7-12mo actives than
+        # 0-6mo — use AH04 only until we have dedicated CS data. Revisit
+        # when CS-specific campaigns accumulate in the Scorecard.
+        "sources":     ["AH04"],
         "scale":       1.0,
         "confidence":  "proxy",
     },
