@@ -283,6 +283,10 @@ def build_historical_baseline(gc: gspread.Client) -> pd.DataFrame:
     # Final dressing.
     grid["segment_name"] = grid["hri_segment"].map(SEGMENT_CODES).fillna(grid["hri_segment"])
     grid["confidence"] = grid.apply(_confidence, axis=1)
+    # Attribution methodology — HRI tracks direct response to direct appeals
+    # only; cross-channel revenue (online, DAF, IRA) isn't in Scorecard totals.
+    # This column is a hook for a future multi-attribution methodology.
+    grid["revenue_basis"] = "direct_attribution"
     grid["last_refreshed"] = datetime.utcnow().isoformat()
     if "_proxy" in grid.columns:
         grid = grid.drop(columns=["_proxy"])
@@ -300,7 +304,7 @@ def build_historical_baseline(gc: gspread.Client) -> pd.DataFrame:
         "campaign_type", "hri_segment", "segment_name",
         "response_rate", "avg_gift", "revenue_per_contact",
         "campaign_count", "contacts", "gifts", "revenue",
-        "confidence", "last_refreshed",
+        "confidence", "revenue_basis", "last_refreshed",
     ]
     grid = grid[cols].rename(columns={
         "hri_segment": "hri_segment_code",
@@ -341,6 +345,7 @@ def write_to_bq(grid: pd.DataFrame) -> None:
         bigquery.SchemaField("total_gifts",          "INTEGER"),
         bigquery.SchemaField("total_revenue",        "FLOAT"),
         bigquery.SchemaField("confidence",           "STRING"),
+        bigquery.SchemaField("revenue_basis",        "STRING"),
         bigquery.SchemaField("last_refreshed",       "STRING"),
     ]
     job_config = bigquery.LoadJobConfig(
@@ -363,9 +368,20 @@ def write_to_bq(grid: pd.DataFrame) -> None:
     logger.info(f"  BQ: wrote {len(grid):,} rows to {BQ_TABLE}")
 
 
+METHODOLOGY_NOTE = (
+    "Direct-attribution response only. Cross-channel revenue "
+    "(online, DAF, IRA) not included but correlates proportionally."
+)
+
+
 def write_to_mic(gc: gspread.Client, grid: pd.DataFrame) -> None:
     """Write the grid to MIC 'Historical Baseline' tab in a wide layout
-    (campaign types as columns, segments as rows) showing response rate."""
+    (campaign types as columns, segments as rows) showing response rate.
+
+    Row 1: methodology note (merged across all columns).
+    Row 2: column headers.
+    Row 3+: data.
+    """
     sh = gc.open_by_key(MIC_SHEET_ID)
     try:
         ws = sh.worksheet(MIC_HISTORICAL_BASELINE_TAB)
@@ -375,7 +391,12 @@ def write_to_mic(gc: gspread.Client, grid: pd.DataFrame) -> None:
 
     # Tidy long-form write — easier to verify and BQ is source of truth anyway.
     headers = list(grid.columns)
-    rows = [headers] + grid.astype(object).where(pd.notnull(grid), "").values.tolist()
+    note_row = [METHODOLOGY_NOTE] + [""] * (len(headers) - 1)
+    rows = (
+        [note_row]
+        + [headers]
+        + grid.astype(object).where(pd.notnull(grid), "").values.tolist()
+    )
     # Resize if needed
     needed_cols = max(len(headers), ws.col_count)
     needed_rows = max(len(rows) + 10, ws.row_count)
