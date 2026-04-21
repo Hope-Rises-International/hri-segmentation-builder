@@ -276,6 +276,23 @@
       </div>
     </div>
     <div id="campaign-msg"></div>
+
+    <!-- Branch: New build vs. Post-mailing Actuals -->
+    <div id="mode-section" class="hidden" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--hri-border)">
+      <label style="font-size:13px;color:var(--hri-muted);display:block;margin-bottom:8px">
+        What are you doing for this campaign?
+      </label>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:14px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="radio" name="flow-mode" value="new" onchange="onFlowModeChange()">
+          <strong>New</strong> — build the mailing plan (baseline → scenario → approve)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="radio" name="flow-mode" value="actuals" onchange="onFlowModeChange()">
+          <strong>Actuals</strong> — record post-mailing cost + quantity
+        </label>
+      </div>
+    </div>
   </div>
 
   <!-- Step 2: Segment Group Toggles -->
@@ -380,45 +397,12 @@
     </div>
   </div>
 
-  <!-- Step 4: Approve + Generate -->
-  <div class="card hidden" id="step-approve">
-    <h2>Step 4: Approve Mailing Plan</h2>
-    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
-      Review the Draft tab in the MIC. When satisfied, approve to lock the plan
-      and copy segment data to the Segment Detail tab.
-    </p>
-    <div class="action-bar">
-      <button class="btn btn-gold" id="btn-approve" onclick="approvePlan()">
-        Approve Plan
-      </button>
-      <button class="btn btn-outline" id="btn-unlock" onclick="unlockCampaign()" style="display:none">
-        Unlock (back to Projected)
-      </button>
-    </div>
-    <div id="approve-msg"></div>
-  </div>
-
-  <!-- Step 5: Output Files -->
-  <div class="card hidden" id="step-files">
-    <h2>Step 5: Output Files</h2>
-    <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
-      Download the Printer File (for VeraData) and Internal Matchback File.
-    </p>
-    <div id="files-loading" class="loading">Loading files...</div>
-    <ul class="file-list hidden" id="file-list"></ul>
-    <div class="action-bar">
-      <button class="btn btn-sage" onclick="loadToSalesforce()">
-        Load to Salesforce
-      </button>
-    </div>
-    <div id="sf-msg"></div>
-  </div>
-
-  <!-- Step 6: Post-Mailing Actuals -->
+  <!-- Actuals path: entered via "Actuals" radio in Step 1 -->
   <div class="card hidden" id="step-actuals">
-    <h2>Step 6: Post-Mailing Actuals</h2>
+    <h2>Post-Mailing Actuals</h2>
     <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
-      After mailing, enter actual cost and quantities from the agency invoice.
+      After the mailing drops, enter the actual quantity and cost from the
+      agency invoice. Saving flips the campaign status to <strong>Mailed</strong>.
     </p>
     <div class="actuals-form">
       <div>
@@ -520,10 +504,10 @@
     if (idx === '') {
       selectedCampaign = null;
       hide('campaign-info');
+      hide('mode-section');
+      hide('baseline-section');
       hide('step-toggles');
       hide('step-project');
-      hide('step-approve');
-      hide('step-files');
       hide('step-actuals');
       return;
     }
@@ -531,7 +515,7 @@
     selectedCampaign = campaigns[parseInt(idx)];
     var c = selectedCampaign;
 
-    // Show campaign info
+    // Show campaign info + the New/Actuals branch selector
     var info = document.getElementById('campaign-info');
     info.innerHTML =
       infoItem('Campaign', c.campaign_name) +
@@ -544,33 +528,44 @@
       infoItem('Status', '<span class="status-badge status-' + (c.status || 'Draft') + '">' + (c.status || 'Draft') + '</span>');
     show('campaign-info');
 
-    // Show baseline selector and load options
-    show('baseline-section');
-    loadBaselineCampaigns();
-    loadBaselineTypes();
-    autoPopulateBaselineType(c.historical_type);
-    onBaselineModeChange();
+    // Reset branch selection each time a campaign is picked and hide all
+    // downstream steps. The operator must explicitly pick New or Actuals
+    // before any step becomes visible.
+    document.getElementsByName('flow-mode').forEach(function(r) { r.checked = false; });
+    show('mode-section');
+    hide('baseline-section');
+    hide('step-toggles');
+    hide('step-project');
+    hide('step-actuals');
+  }
 
-    // Show appropriate steps based on status
-    show('step-toggles');
-    show('step-project');
-
-    var status = c.status || 'Draft';
-
-    // Steps 4-6 visible after any projection exists
-    if (['Projected', 'Approved', 'Pulled', 'Mailed'].includes(status)) {
-      show('step-approve');
-      show('step-files');
-      loadFiles();
-      show('step-actuals');
-      if (status === 'Approved') {
-        document.getElementById('btn-unlock').style.display = '';
-      } else {
-        document.getElementById('btn-unlock').style.display = 'none';
-      }
+  // Routes the UI based on the operator's New/Actuals choice after
+  // picking a campaign. New runs the full baseline → scenario → approve
+  // flow; Actuals jumps straight to post-mailing cost + qty capture.
+  function onFlowModeChange() {
+    var radios = document.getElementsByName('flow-mode');
+    var mode = null;
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) { mode = radios[i].value; break; }
     }
+    if (!mode || !selectedCampaign) return;
 
-    refreshDraft();
+    if (mode === 'new') {
+      show('baseline-section');
+      loadBaselineCampaigns();
+      loadBaselineTypes();
+      autoPopulateBaselineType(selectedCampaign.historical_type);
+      onBaselineModeChange();
+      show('step-toggles');
+      show('step-project');
+      hide('step-actuals');
+      refreshDraft();
+    } else {  // actuals
+      hide('baseline-section');
+      hide('step-toggles');
+      hide('step-project');
+      show('step-actuals');
+    }
   }
 
   // --- Baseline: mode toggle + type / specific selection ---
@@ -765,15 +760,8 @@
             'onclick="runProjectionConfirmed()">Overwrite</button>');
         } else if (result.status === 'running') {
           showMsg('projection-msg', 'info', result.message);
-          show('step-approve');
-          show('step-files');
-          show('step-actuals');
         } else {
           showMsg('projection-msg', 'success', result.message);
-          show('step-approve');
-          show('step-files');
-          show('step-actuals');
-          loadFiles();
           refreshDraft();
         }
       })
@@ -817,11 +805,6 @@
         }
         renderDraftTable(result.segments);
         show('draft-preview');
-        // Show Steps 4-6 whenever Draft has data
-        show('step-approve');
-        show('step-files');
-        show('step-actuals');
-        loadFiles();
       })
       .getDraftData();
   }
@@ -958,9 +941,6 @@
     show('draft-preview');
     show('scenarios-panel');
     show('approve-scenario-bar');
-    show('step-approve');
-    show('step-files');
-    show('step-actuals');
 
     onTargetTypeChange();
     renderDraftHTML();
@@ -1449,93 +1429,6 @@
   }
 
   // --- Approve ---
-  function approvePlan() {
-    if (!selectedCampaign) return;
-    var btn = document.getElementById('btn-approve');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Approving...';
-
-    google.script.run
-      .withSuccessHandler(function(result) {
-        btn.disabled = false;
-        btn.innerHTML = 'Approve Plan';
-        if (result.error) {
-          showMsg('approve-msg', 'error', result.error);
-        } else {
-          showMsg('approve-msg', 'success', result.message);
-          selectedCampaign.status = 'Approved';
-          show('step-files');
-          loadFiles();
-        }
-      })
-      .withFailureHandler(function(e) {
-        btn.disabled = false;
-        btn.innerHTML = 'Approve Plan';
-        showMsg('approve-msg', 'error', 'Approve failed: ' + e);
-      })
-      .approveProjection(selectedCampaign.appeal_code);
-  }
-
-  function unlockCampaign() {
-    if (!selectedCampaign) return;
-    google.script.run
-      .withSuccessHandler(function(result) {
-        if (result.error) { showMsg('approve-msg', 'error', result.error); }
-        else {
-          showMsg('approve-msg', 'info', result.message);
-          selectedCampaign.status = 'Projected';
-          document.getElementById('btn-unlock').style.display = 'none';
-        }
-      })
-      .unlockCampaign(selectedCampaign.appeal_code);
-  }
-
-  // --- Files ---
-  function loadFiles() {
-    if (!selectedCampaign) return;
-    document.getElementById('files-loading').className = 'loading';
-    hide('file-list');
-
-    google.script.run
-      .withSuccessHandler(function(result) {
-        document.getElementById('files-loading').className = 'hidden';
-        if (result.error) {
-          document.getElementById('files-loading').className = '';
-          document.getElementById('files-loading').textContent = result.error;
-          return;
-        }
-        var list = document.getElementById('file-list');
-        if (!result.files || result.files.length === 0) {
-          list.innerHTML = '<li>No output files yet. Generate files after approval.</li>';
-        } else {
-          list.innerHTML = result.files.map(function(f) {
-            return '<li><a href="' + f.url + '" target="_blank">' + f.name + '</a>' +
-              '<div class="file-meta">' + new Date(f.date).toLocaleString() +
-              ' &middot; ' + formatBytes(f.size) + '</div></li>';
-          }).join('');
-        }
-        show('file-list');
-      })
-      .getOutputFiles(selectedCampaign.appeal_code);
-  }
-
-  // --- SF Load ---
-  function loadToSalesforce() {
-    if (!selectedCampaign) return;
-    showMsg('sf-msg', 'info', '<span class="spinner"></span> Loading to Salesforce...');
-
-    google.script.run
-      .withSuccessHandler(function(result) {
-        if (result.error) { showMsg('sf-msg', 'error', result.error); }
-        else {
-          showMsg('sf-msg', 'success', result.message);
-          selectedCampaign.status = 'Pulled';
-          show('step-actuals');
-        }
-      })
-      .loadToSalesforce(selectedCampaign.appeal_code);
-  }
-
   // --- Actuals ---
   function submitActuals() {
     if (!selectedCampaign) return;
