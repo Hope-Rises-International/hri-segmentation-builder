@@ -44,36 +44,73 @@ MIN_CAMPAIGNS_FOR_HIGH = 3    # <3 contributing campaigns → "estimate" confide
 
 # -------- Proxy definitions for HRI-native segments with no TLC equivalent --
 
-# Each proxy says: "for segment X, use the weighted aggregate of these source
-# segments' contacts/gifts/revenue — but flag the output as 'proxy' / 'estimate'."
+# Each proxy says: "for segment X, compute stand-in economics from these
+# source segments. Flag the output as proxy/estimate so the operator sees
+# it came from a proxy, not direct data."
 #
 # Source segments are the TLC-mappable HRI segments that exist in the data.
-# The scale_factor adjusts for known divergence (e.g., CBNC responds ~1.5×
-# better than its proxy LR01).
+# Two blend methods:
+#   "aggregate"  — sum contacts/gifts/revenue across sources. Contact-volume
+#                  weighted: high-volume sources dominate. Good for "this
+#                  segment behaves like an average of these source segments
+#                  weighted by how often we actually mail each."
+#   "mean_rate"  — compute response_rate and avg_gift for each source,
+#                  then take the equal-weighted mean of the rates. Use when
+#                  we want an explicit blend regardless of source volume.
+# `scale` multiplies the final response_rate (not avg_gift) — useful for
+# CB01 (CBNC respond higher than their lapsed baseline).
 PROXY_SEGMENTS = {
     "CS01": {
-        # Bill 2026-04-20: AH01+AH04 proxy ran too hot (~5.2% RR on Shipping).
-        # Cornerstone response patterns look closer to 7-12mo actives than
-        # 0-6mo — use AH04 only until we have dedicated CS data. Revisit
-        # when CS-specific campaigns accumulate in the Scorecard.
-        "sources":     ["AH04"],
+        # Bill 2026-04-21: AH04-only proxy still ran too hot. Cornerstones
+        # span 0-6mo actives through long-lapsed; the composite score
+        # (R×0.5 + C×0.3 + F×0.2) blends recency with history. An equal
+        # blend of AH04 (7-12mo active) and LR01 (13-24mo lapsed) mirrors
+        # that pattern until we have CS-tagged campaign data.
+        "sources":     ["AH04", "LR01"],
+        "blend":       "mean_rate",
         "scale":       1.0,
         "confidence":  "proxy",
     },
     "MJ01": {
         "sources":     ["AH01", "AH04"],   # 0-12mo, $50+ as stand-in for $100+
+        "blend":       "aggregate",
         "scale":       1.0,
         "confidence":  "proxy",
     },
     "MP01": {
         "sources":     ["AH01", "AH04"],   # 0-12mo, $50+
+        "blend":       "aggregate",
         "scale":       1.0,
         "confidence":  "proxy",
     },
     "CB01": {
         "sources":     ["LR01"],
+        "blend":       "aggregate",
         "scale":       1.5,                # CBNC respond ~1.5× the lapsed baseline
         "confidence":  "estimate",
+    },
+    # 19-24mo lapsed. TLC recency code J lumps 13-24mo into LR01; no direct
+    # data for the older half. Use LR01 scaled down by 25%.
+    "LR02": {
+        "sources":     ["LR01"],
+        "blend":       "aggregate",
+        "scale":       0.75,
+        "confidence":  "proxy",
+    },
+    # 37-48mo deep lapsed — no TLC codes exist for this recency band. Each
+    # additional year of lapse roughly halves response. Use 25-36mo data
+    # scaled down by 50%.
+    "DL03": {
+        "sources":     ["DL01"],
+        "blend":       "aggregate",
+        "scale":       0.5,
+        "confidence":  "proxy",
+    },
+    "DL04": {
+        "sources":     ["DL02"],
+        "blend":       "aggregate",
+        "scale":       0.5,
+        "confidence":  "proxy",
     },
 }
 
@@ -208,24 +245,61 @@ def _aggregate(rows: pd.DataFrame, groupby_type: bool) -> pd.DataFrame:
 
 def _apply_proxies(grid: pd.DataFrame) -> pd.DataFrame:
     """For each campaign_type present in the grid, fill in proxy rows for
-    CS01/MJ01/MP01/CB01 by aggregating their source segments inside that type."""
+    the HRI-native segments (CS01/MJ01/MP01/CB01/LR02/DL03/DL04) by
+    borrowing from source segments inside that same campaign type.
+
+    Two blend modes (see PROXY_SEGMENTS):
+      - "aggregate" sums contacts/gifts/revenue across sources (contact-
+        volume weighted).
+      - "mean_rate" averages the per-source response_rate and avg_gift
+        equal-weighted — used when source-volume dominance would produce
+        the wrong answer (e.g., CS01 where LR01 has 17× the contacts of
+        AH04 and would wipe out the active signal).
+    Direct data (a segment already in the grid for that type) always wins
+    over a proxy.
+    """
     rows_out = [grid]
     for campaign_type in grid["campaign_type"].unique():
         type_slice = grid[grid["campaign_type"] == campaign_type].set_index("hri_segment")
         for target_seg, cfg in PROXY_SEGMENTS.items():
             if target_seg in type_slice.index:
-                continue   # direct data wins over proxy
+                continue
             available = [s for s in cfg["sources"] if s in type_slice.index]
             if not available:
                 continue
             sub = type_slice.loc[available]
-            total_contacts = float(sub["contacts"].sum())
-            total_gifts    = float(sub["gifts"].sum()) * cfg["scale"]
-            total_revenue  = float(sub["revenue"].sum()) * cfg["scale"]
-            if total_contacts <= 0:
-                continue
-            rr = total_gifts / total_contacts
-            avg = (total_revenue / total_gifts) if total_gifts > 0 else 0
+            blend = cfg.get("blend", "aggregate")
+            scale = cfg.get("scale", 1.0)
+
+            if blend == "mean_rate":
+                # Equal-weighted mean of per-source rates.
+                source_rates = []
+                source_avgs  = []
+                for _, row in sub.iterrows():
+                    c = float(row["contacts"])
+                    g = float(row["gifts"])
+                    r = float(row["revenue"])
+                    if c > 0:
+                        source_rates.append(g / c)
+                    if g > 0:
+                        source_avgs.append(r / g)
+                if not source_rates:
+                    continue
+                rr  = (sum(source_rates) / len(source_rates)) * scale
+                avg = (sum(source_avgs)  / max(len(source_avgs), 1))
+                # Synthesize contacts/gifts/revenue for reporting parity.
+                total_contacts = float(sub["contacts"].sum())
+                total_gifts    = total_contacts * rr
+                total_revenue  = total_gifts * avg
+            else:  # aggregate
+                total_contacts = float(sub["contacts"].sum())
+                total_gifts    = float(sub["gifts"].sum()) * scale
+                total_revenue  = float(sub["revenue"].sum()) * scale
+                if total_contacts <= 0:
+                    continue
+                rr  = total_gifts / total_contacts
+                avg = (total_revenue / total_gifts) if total_gifts > 0 else 0
+
             rows_out.append(pd.DataFrame([{
                 "hri_segment":      target_seg,
                 "campaign_type":    campaign_type,

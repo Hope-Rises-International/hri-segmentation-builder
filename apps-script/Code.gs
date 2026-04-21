@@ -285,12 +285,13 @@ function getHistoricalBaselineTypes() {
   return {
     types: [
       // Base types
-      'Shipping', 'Tax Receipt', 'Year End', 'Easter', 'Renewal',
-      'Faith Leaders', 'Shoes', 'Whole Person Healing', 'FYE',
+      'Christmas Shipping', 'Shipping', 'Tax Receipt', 'Year End', 'Easter',
+      'Renewal', 'Faith Leaders', 'Shoes', 'Whole Person Healing', 'FYE',
       // Chaser variants
-      'Shipping Chaser', 'Tax Receipt Chaser', 'Year End Chaser',
-      'Easter Chaser', 'Renewal Chaser', 'Faith Leaders Chaser',
-      'Shoes Chaser', 'Whole Person Healing Chaser', 'FYE Chaser',
+      'Christmas Shipping Chaser', 'Shipping Chaser', 'Tax Receipt Chaser',
+      'Year End Chaser', 'Easter Chaser', 'Renewal Chaser',
+      'Faith Leaders Chaser', 'Shoes Chaser', 'Whole Person Healing Chaser',
+      'FYE Chaser',
       // Lane-based
       'Newsletter', 'Acquisition',
       // Catch-all
@@ -316,7 +317,16 @@ function classifyCampaignType_(campaignName, lane, isFollowup) {
   if (fu === 'TRUE' || fu === '1' || fu === 'YES') chaser = true;
   if (!chaser && /\bchaser\b|\bf\/u\b|\bfu\b/i.test(name)) chaser = true;
 
+  // Lane wins over name-based rules so "July Acquisition Shipping"
+  // (lane=Acquisition) classifies as Acquisition, not Shipping.
+  var laneVal = String(lane || '').trim();
+  if (laneVal === 'Newsletter')  return 'Newsletter';
+  if (laneVal === 'Acquisition') return 'Acquisition';
+
+  // Christmas Shipping tested BEFORE Shipping so the substring check
+  // doesn't collapse it into regular Shipping.
   var baseTypes = [
+    ['Christmas Shipping',    'christmas shipping'],
     ['Shipping',              'shipping'],
     ['Tax Receipt',           'tax receipt'],
     ['Year End',              'year end'],
@@ -335,9 +345,6 @@ function classifyCampaignType_(campaignName, lane, isFollowup) {
     return chaser ? 'FYE Chaser' : 'FYE';
   }
 
-  var laneVal = String(lane || '').trim();
-  if (laneVal === 'Newsletter')  return 'Newsletter';
-  if (laneVal === 'Acquisition') return 'Acquisition';
   return 'Other';
 }
 

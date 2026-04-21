@@ -17,7 +17,12 @@ import re
 #   (base_type_name, pattern)
 # Pattern = substring matched case-insensitively against campaign_name.
 # Chaser variants are derived automatically from this list.
+#
+# Order matters — the first pattern to match wins. "Christmas Shipping"
+# must come BEFORE "Shipping" so a campaign named "Christmas Shipping"
+# doesn't get collapsed into the regular Shipping baseline.
 BASE_TYPES = [
+    ("Christmas Shipping",   "christmas shipping"),
     ("Shipping",             "shipping"),
     ("Tax Receipt",          "tax receipt"),
     ("Year End",             "year end"),
@@ -30,6 +35,9 @@ BASE_TYPES = [
 ]
 
 # Types derived from the `lane` column rather than campaign name.
+# Lane check happens FIRST — before any name-based rule — so a campaign
+# named "July Acquisition Shipping" with lane=Acquisition goes into
+# Acquisition, not Shipping.
 LANE_TYPES = {
     "Newsletter":  "Newsletter",
     "Acquisition": "Acquisition",
@@ -55,15 +63,22 @@ def classify_campaign(campaign_name: str, lane: str = "", is_followup=None) -> s
     """Return the campaign type for a single campaign.
 
     Rules (order matters):
-      1. If the name matches a known base type:
+      1. If `lane` is Newsletter / Acquisition → that lane name.
+         Lane wins over name-based rules: a campaign called "July
+         Acquisition Shipping" with lane=Acquisition is Acquisition,
+         not Shipping.
+      2. If the name matches a known base type:
          - Chaser? → "<Base> Chaser"
          - Otherwise → "<Base>"
-      2. Else, if `lane` is Newsletter / Acquisition → that lane name.
       3. Else → "Other".
     """
     name = campaign_name or ""
     name_lc = name.lower()
     chaser = _is_chaser(name, is_followup)
+
+    lane_val = (lane or "").strip()
+    if lane_val in LANE_TYPES:
+        return LANE_TYPES[lane_val]
 
     for base_name, pattern in BASE_TYPES:
         if base_name == "FYE":
@@ -72,10 +87,6 @@ def classify_campaign(campaign_name: str, lane: str = "", is_followup=None) -> s
             matched = pattern in name_lc
         if matched:
             return f"{base_name} Chaser" if chaser else base_name
-
-    lane_val = (lane or "").strip()
-    if lane_val in LANE_TYPES:
-        return LANE_TYPES[lane_val]
 
     return "Other"
 
