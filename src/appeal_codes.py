@@ -139,8 +139,15 @@ def generate_appeal_codes(
         acct_id = row["account_id"]
         seg_code = row["segment_code"]
 
-        # 9-char appeal code: from MIC Campaign Calendar (campaign-level, same for all donors)
-        appeal_9 = campaign_appeal_code if len(campaign_appeal_code) == 9 else campaign_appeal_code[:9].ljust(9, "0")
+        # 9-char appeal code: <CampaignPrefix:5><SegmentCode:4>.
+        # Positions 1-5 are campaign-level (e.g. "A2651"); positions 6-9
+        # are the HRI segment (AH01, CS01, etc) so Aegis can attribute
+        # returned gifts to a segment from the scanline alone, without
+        # joining to Matchback. Spec §9 calls for segment in pos 6-9 —
+        # earlier implementation zero-padded as "A26510000" and dropped
+        # the segment signal.
+        campaign_prefix_5 = (campaign_appeal_code or "")[:5].ljust(5, "0")
+        appeal_9 = f"{campaign_prefix_5}{seg_code}"
 
         # Program code (by 2-char prefix)
         program = PROGRAM_BY_PREFIX.get(seg_code[:2], "R")
@@ -189,9 +196,15 @@ def generate_appeal_codes(
 
     # Validate uniqueness
     if len(df) > 0:
-        # 9-char codes are campaign-level (same for all donors) — uniqueness is per campaign × panel
+        # 9-char codes are now segment-aware: <campaign:5><segment:4>.
+        # Distinct count should equal the segment count (1 per segment per
+        # campaign), not 1 per campaign as in the old zero-padded format.
         unique_9 = df["appeal_code_9"].nunique()
-        logger.info(f"  9-char appeal codes: {unique_9} unique (campaign-level, expected 1 per campaign)")
+        expected_9 = df["segment_code"].nunique()
+        if unique_9 == expected_9:
+            logger.info(f"  9-char appeal codes: {unique_9} unique (one per segment, expected {expected_9})")
+        else:
+            logger.warning(f"  WARNING: 9-char code count {unique_9} != expected segment count {expected_9}")
 
         # 15-char codes should be unique per segment × package × test
         unique_15 = df["appeal_code_15"].nunique()
@@ -225,12 +238,14 @@ def validate_appeal_codes(codes_df: pd.DataFrame) -> pd.DataFrame:
         rows.append({"Check": "No codes generated", "Status": "FAIL", "Detail": "Empty output"})
         return pd.DataFrame(rows)
 
-    # 9-char uniqueness (per campaign — should be 1)
+    # 9-char codes are now segment-encoded (<campaign:5><segment:4>).
+    # Distinct count must equal distinct segment count.
     unique_9 = codes_df["appeal_code_9"].nunique()
+    expected_9 = codes_df["segment_code"].nunique()
     rows.append({
-        "Check": "9-char Appeal Codes Unique (per campaign)",
-        "Status": "PASS" if unique_9 >= 1 else "FAIL",
-        "Detail": f"{unique_9} unique 9-char code(s)",
+        "Check": "9-char Appeal Codes Unique (one per segment)",
+        "Status": "PASS" if unique_9 == expected_9 else "FAIL",
+        "Detail": f"{unique_9} unique 9-char codes (expected {expected_9} = distinct segments)",
     })
 
     # 15-char uniqueness (per segment × package × test)
