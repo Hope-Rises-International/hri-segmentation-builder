@@ -11,6 +11,7 @@ Produces:
 """
 
 from __future__ import annotations
+import csv
 import logging
 import random
 
@@ -326,9 +327,16 @@ def generate_output_files(
         if len(bad_zips) > 0:
             warnings.append(f"WARNING: {len(bad_zips)} ZIPs shorter than 5 chars")
 
-    printer_csv = printer_df.to_csv(index=False)
-    matchback_csv = matchback_df.to_csv(index=False)
-    exceptions_csv = exceptions_df.to_csv(index=False) if len(exceptions_df) > 0 else ""
+    # QUOTE_NONNUMERIC: every non-numeric cell ships wrapped in double
+    # quotes. Tells any RFC 4180-aware consumer (lettershop parsers,
+    # Excel "From Text", Google Sheets import without auto-detect) that
+    # the value is a string. ZIPs like 02861 keep their leading zero
+    # because the CSV explicitly types them as text. Numeric columns
+    # (Ask amounts, gift counts) write unquoted as before.
+    printer_csv     = printer_df.to_csv(index=False,     quoting=csv.QUOTE_NONNUMERIC)
+    matchback_csv   = matchback_df.to_csv(index=False,   quoting=csv.QUOTE_NONNUMERIC)
+    exceptions_csv  = (exceptions_df.to_csv(index=False, quoting=csv.QUOTE_NONNUMERIC)
+                       if len(exceptions_df) > 0 else "")
 
     logger.info(f"  Printer File: {len(printer_df):,} rows")
     logger.info(f"  Matchback File: {len(matchback_df):,} rows")
@@ -354,7 +362,7 @@ def generate_output_files(
         "State": supp_aids.map(accts["BillingState"] if "BillingState" in accts.columns else pd.Series(dtype=str)).fillna(""),
         "ZIP": _format_zip_series(supp_aids.map(accts["BillingPostalCode"] if "BillingPostalCode" in accts.columns else pd.Series(dtype=str))),
     })
-    suppression_csv = supp_df.to_csv(index=False)
+    suppression_csv = supp_df.to_csv(index=False, quoting=csv.QUOTE_NONNUMERIC)
     logger.info(f"  Housefile Suppression: {len(supp_df):,} rows")
 
     total_time = time.time() - t0
