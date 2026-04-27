@@ -53,13 +53,42 @@ MATCHBACK_COLUMNS = [
 
 
 def _format_zip_series(s):
-    """Vectorized ZIP formatting: preserve leading zeros."""
+    """Vectorized ZIP normalization per SPEC §10.1 (Text(10), preserve
+    leading zeros). Goal: every non-empty value matches ^\\d{5}(-\\d{4})?$.
+
+    Rules (in order; first match wins, otherwise pass-through):
+      - empty / NaN / 'nan' / '0'           → ''
+      - 1-4 pure-digit numeric              → left-pad to 5 ('1234' → '01234')
+      - 9-char string of digits + space/hyphen separators → 'XXXXX-XXXX'
+        (handles '012345678', '01234-5678', '01234 5678', '27410 3009')
+      - already 5 digits OR 5-4 hyphenated  → pass through unchanged
+      - anything else (international, malformed) → pass through
+
+    Pre-strip trailing '.0' from float-coerced strings ('12345.0' → '12345').
+    """
     s = s.fillna("").astype(str).str.strip()
     s = s.str.replace(r'\.0$', '', regex=True)
-    # Pad numeric ZIPs shorter than 5 digits
-    is_short_numeric = s.str.match(r'^\d{1,4}$')
-    s = s.where(~is_short_numeric, s.str.zfill(5))
-    return s
+    # Treat the literal string 'nan' or bare '0' as empty rather than valid.
+    s = s.where(~s.str.lower().isin(["nan", "none"]), "")
+    s = s.where(s != "0", "")
+
+    out = s.copy()
+
+    # Case A: 1-4 digit pure-numeric → left-pad to 5.
+    # Restricted to all-digit inputs so 'BH1 3HR' (UK postal code, len 2 after
+    # stripping non-digits) doesn't get corrupted into '00013'.
+    short_mask = s.str.match(r'^\d{1,4}$')
+    out = out.mask(short_mask, s.str.zfill(5))
+
+    # Case B: ZIP+4 with any separator (or none). Strip spaces + hyphens; if
+    # what remains is exactly 9 digits AND the original was just digits and
+    # separators, normalize to canonical 'XXXXX-XXXX'. Catches the architect-
+    # cited '012345678' case plus the live A2651 '27410 3009' case.
+    sep_stripped = s.str.replace(r'[\s\-]', '', regex=True)
+    nine_mask = sep_stripped.str.match(r'^\d{9}$') & s.str.match(r'^[\d\s\-]+$')
+    out = out.mask(nine_mask, sep_stripped.str[:5] + "-" + sep_stripped.str[5:])
+
+    return out
 
 
 def _split_street(s):
@@ -228,7 +257,9 @@ def generate_output_files(
     master["Address1"], master["Address2"] = _split_street(master["BillingStreet"])
     master["City"] = master["BillingCity"].fillna("")
     master["State"] = master["BillingState"].fillna("")
-    master["ZIP"] = _format_zip_series(master["BillingPostalCode"])
+    # Force string dtype to defeat any later pandas int-coercion
+    # (same belt-and-suspenders pattern as DonorID zero-padding).
+    master["ZIP"] = _format_zip_series(master["BillingPostalCode"]).astype(object)
     master["Country"] = master["BillingCountry"].fillna("")
 
     # Rename code columns. DonorID must stay 9-char string with leading
