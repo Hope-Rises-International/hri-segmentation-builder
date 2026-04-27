@@ -1,0 +1,240 @@
+<div class="ref-content">
+<style>
+  .ref-content { font-size: 13px; line-height: 1.5; max-width: 1100px; }
+  .ref-content h1 { font-size: 18px; margin: 0 0 4px 0; }
+  .ref-content .ref-subtitle { font-size: 12px; color: var(--hri-muted); margin-bottom: 18px; }
+  .ref-content h2 { font-size: 15px; margin: 22px 0 8px 0; padding-top: 12px; border-top: 1px solid var(--hri-border); }
+  .ref-content table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  .ref-content th, .ref-content td { border: 1px solid var(--hri-border); padding: 6px 8px; text-align: left; vertical-align: top; }
+  .ref-content th { background: var(--hri-light); font-weight: 600; }
+  .ref-content code { background: var(--hri-light); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .ref-content .narrative p { margin: 6px 0; }
+  .ref-content ul { margin: 4px 0 4px 18px; }
+</style>
+
+<h1>HRI Segmentation Builder — Logic &amp; Math Reference</h1>
+<div class="ref-subtitle">Synced from SPEC.md v2026-04-27, deployed 2026-04-27. Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+
+<h2>1. Waterfall Hierarchy</h2>
+<p>Each donor lands in exactly one position. Position priority is top-down — the first match wins. Toggle OFF on any toggleable position <strong>removes matching donors from the universe entirely</strong>; they do not fall through to a lower position.</p>
+<table>
+  <thead><tr><th>Pos</th><th>Position Name</th><th>Field / Logic</th><th>Toggle Default</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Global Suppression (Tier 1 hard)</td><td>Always-on suppressions</td><td>Always ON</td><td>See section 2.</td></tr>
+    <tr><td>2</td><td>Major Gift Portfolio</td><td><code>Staff_Manager__c</code> populated</td><td>ON</td><td>Toggle OFF excludes from universe.</td></tr>
+    <tr><td>3</td><td>Mid-Level</td><td>Cumulative $1k–$5k AND active 24mo</td><td>ON</td><td>Toggle OFF excludes from universe.</td></tr>
+    <tr><td>4</td><td>Monthly Sustainers</td><td><code>Miracle_Partner__c</code> = TRUE</td><td>OFF</td><td>Default OFF excludes Miracle Partners from general appeals.</td></tr>
+    <tr><td>5</td><td>Cornerstone Partners</td><td><code>Cornerstone_Partner__c</code> = TRUE</td><td>ON</td><td>Toggle OFF excludes from universe entirely.</td></tr>
+    <tr><td>6</td><td>New Donor (Welcome)</td><td>Lifecycle = New Donor (90-day window)</td><td>OFF</td><td>Default OFF excludes new donors from non-welcome appeals.</td></tr>
+    <tr><td>7</td><td>Active Housefile — High Value</td><td>R1–R2 + F1–F2 + M1–M2</td><td>ON</td><td>Sub-segments AH01–AH03 by recency × monetary.</td></tr>
+    <tr><td>8</td><td>Active Housefile — Standard</td><td>R2 remaining</td><td>ON</td><td>Sub-segments AH04–AH06.</td></tr>
+    <tr><td>9</td><td>Mid-Level Prospect</td><td>Cumulative $500–$999 AND active 24mo</td><td>ON</td><td>MP01.</td></tr>
+    <tr><td>10</td><td>Lapsed Recent</td><td>R3 (13–24mo) + 2+ lifetime gifts</td><td>ON</td><td>LR01 (13–18mo), LR02 (19–24mo).</td></tr>
+    <tr><td>11</td><td>Deep Lapsed</td><td>R4–R5 (25–48mo) + cumulative ≥ $10</td><td>ON</td><td>DL01–DL04 by recency × monetary.</td></tr>
+    <tr><td>12</td><td>CBNC Flag Override</td><td>Pre-computed CBNC flag</td><td>Always ON</td><td>Catches anyone unassigned by 2–11.</td></tr>
+  </tbody>
+</table>
+
+<h2>2. Suppression — Tier 1 (hard, always ON)</h2>
+<table>
+  <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>All household members deceased</td><td><code>npsp__All_Members_Deceased__c</code></td><td>Single-contact-deceased is Tier 3 (not auto-suppressed).</td></tr>
+    <tr><td>2</td><td>Do Not Contact</td><td><code>Do_Not_Contact__c</code></td><td></td></tr>
+    <tr><td>3</td><td>No Mail Code</td><td><code>No_Mail_Code__c</code></td><td></td></tr>
+    <tr><td>4</td><td>Undeliverable Address</td><td><code>npsp__Undeliverable_Address__c</code></td><td></td></tr>
+    <tr><td>5</td><td>NCOA Deceased</td><td><code>NCOA_Deceased_Processing__c</code></td><td></td></tr>
+    <tr><td>6</td><td>Blank Address</td><td><code>BillingStreet</code> / <code>BillingCity</code> / <code>BillingPostalCode</code></td><td>Any one blank → suppress.</td></tr>
+  </tbody>
+</table>
+
+<h2>3. Suppression — Tier 2 (communication preferences, default ON)</h2>
+<table>
+  <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Default</th><th>Conditional Logic</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Newsletters Only</td><td><code>Newsletters_Only__c</code></td><td>ON</td><td>Suppress for non-newsletter campaigns.</td></tr>
+    <tr><td>2</td><td>Newsletter and Prospectus Only</td><td><code>Newsletter_and_Prospectus_Only__c</code></td><td>ON</td><td>Same — only newsletters / prospectus.</td></tr>
+    <tr><td>3</td><td>No Name Sharing</td><td><code>No_Name_Sharing__c</code></td><td>ON</td><td>Suppress from acquisition campaigns only.</td></tr>
+    <tr><td>4</td><td>Match Only</td><td><code>Match_Only__c</code></td><td>ON</td><td>Suppress from non-matching-gift campaigns.</td></tr>
+    <tr><td>5</td><td>Address Unknown</td><td><code>Address_Unknown__c</code></td><td>ON</td><td>Hard-suppress mail.</td></tr>
+    <tr><td>6</td><td>Not Deliverable</td><td><code>Not_Deliverable__c</code></td><td>ON</td><td>Hard-suppress mail.</td></tr>
+  </tbody>
+</table>
+
+<h2>4. Suppression — Tier 3 (rare/legacy, default OFF)</h2>
+<table>
+  <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Default</th><th>Conditional Logic</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Primary Contact Deceased</td><td><code>Primary_Contact_is_Deceased__c</code></td><td>OFF</td><td>Some households still mail-eligible via spouse.</td></tr>
+    <tr><td>2</td><td>X1 Mailing Christmas Catalog Only</td><td><code>X1_Mailing_Xmas_Catalog__c</code></td><td>OFF</td><td>Suppress except for Christmas Catalog.</td></tr>
+    <tr><td>3</td><td>X2 Mailings Christmas Appeal Only</td><td><code>X2_Mailings_Xmas_Appeal__c</code></td><td>OFF</td><td>Suppress except for Christmas Appeal.</td></tr>
+  </tbody>
+</table>
+
+<h2>5. Segment-Level Suppression Rules</h2>
+<table>
+  <thead><tr><th>Rule</th><th>Default</th><th>State</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Recent-gift suppression</td><td>ON</td><td>Active</td><td>Skip donors who gave in last 21 days.</td></tr>
+    <tr><td>Break-even suppression</td><td>ON</td><td>Active</td><td>Drop segments below break-even response rate.</td></tr>
+    <tr><td>Response-rate floor</td><td>ON</td><td>Active</td><td>Drop segments below configured RR floor.</td></tr>
+    <tr><td>Frequency cap</td><td>ON</td><td>Active</td><td>Skip donors who already received N appeals this FY.</td></tr>
+    <tr><td>5% holdout</td><td>ON</td><td>Active</td><td>Random 5% suppressed-segment holdout for ROI measurement.</td></tr>
+  </tbody>
+</table>
+
+<h2>6. Ask String Math</h2>
+<div class="narrative">
+<p><strong>Basis selection per segment family:</strong></p>
+<ul>
+  <li><strong>HPC</strong> (<code>npo02__LargestAmount__c</code>) — Active Housefile (AH*), Mid-Level (ML*), Mid-Level Prospect (MP*), Cornerstone (CS01), Major Gift (MJ01), Sustainer (SU01).</li>
+  <li><strong>MRC</strong> (<code>npo02__LastOppAmount__c</code>) — Lapsed Recent (LR*), Deep Lapsed (DL*), CBNC (CB01).</li>
+  <li><strong>First Gift</strong> — New Donor (ND01).</li>
+</ul>
+<p><strong>Ladder formula:</strong> AskAmount1 = basis × 1.0,  AskAmount2 = basis × 1.5,  AskAmount3 = basis × 2.0.</p>
+<p><strong>Rounding:</strong> UP to nearest $5 below $100, UP to nearest $25 at/above $100. Never round down.</p>
+<p><strong>Floor / Ceiling:</strong> Floor = $15. Ceiling = $4,975 (rounded down to a $25 increment).</p>
+<p><strong>Floor-collapse fallback (2026-04-27):</strong> If <em>any</em> raw tier (basis × multiplier) is below the $15 floor, replace the WHOLE ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently — that produced non-monotonic ladders like <code>15 / 20 / 15</code>. Fallback values configurable per campaign via the Segment Rules tab.</p>
+<p><strong>Mid-Level / Major:</strong> ML*, MJ*, MP*, CS01, SU01 segments must always populate AskAmount1/2/3. The lettershop template controls whether the asks render on the printed reply device — builder always supplies the values.</p>
+<p><strong>AskAmountLabel:</strong> ALWAYS BLANK in the CSV. The "Best Gift of $___" line is a donor fill-in; the lettershop renders the static label and HRI does not anchor it.</p>
+</div>
+
+<h2>7. Scanline &amp; Check Digit</h2>
+<div class="narrative">
+<p><strong>Format:</strong> <code>&lt;DonorID:9&gt; &lt;CampaignAppealCode:9&gt; &lt;CheckDigit:1&gt;</code> — 21 chars total, two literal spaces.</p>
+<p><strong>DonorID:</strong> 9 chars; numeric Constituent_Id zero-padded; S-prefixed pass through unchanged.</p>
+<p><strong>CampaignAppealCode:</strong> <code>&lt;TypePrefix:1&gt;&lt;FY:2&gt;&lt;Campaign:2&gt;&lt;SegmentCode:4&gt;</code> — e.g. <code>A2651AH01</code>.</p>
+<p><strong>Check digit conversion table</strong> (alpha → digit; numerics keep value):</p>
+<table>
+  <tr><td>A=1</td><td>B=2</td><td>C=3</td><td>D=4</td><td>E=5</td><td>F=6</td><td>G=7</td><td>H=8</td><td>I=9</td></tr>
+  <tr><td>J=1</td><td>K=2</td><td>L=3</td><td>M=4</td><td>N=5</td><td>O=6</td><td>P=7</td><td>Q=8</td><td>R=9</td></tr>
+  <tr><td>S=2</td><td>T=3</td><td>U=4</td><td>V=5</td><td>W=6</td><td>X=7</td><td>Y=8</td><td>Z=9</td><td></td></tr>
+</table>
+<p><strong>7-step algorithm</strong> on the 18-char (DonorID + AppealCode) string:</p>
+<ol>
+  <li>Treat as 18 individual characters.</li>
+  <li>Replace alpha → digit per table above; numerics keep their value.</li>
+  <li>Assign alternating weights 1, 2, 1, 2, … across the 18 positions.</li>
+  <li>Multiply each value × its weight.</li>
+  <li>If a product &gt; 9, subtract 9; otherwise keep.</li>
+  <li>Sum all 18 step-5 values.</li>
+  <li>CheckDigit = (10 − (sum mod 10)) mod 10.</li>
+</ol>
+<p><strong>Worked example:</strong> <code>070122327W16B1AJ30</code> → check digit <strong>6</strong>. Full scanline: <code>070122327 W16B1AJ30 6</code>.</p>
+</div>
+
+<h2>8. Appeal Code Structure</h2>
+<table>
+  <thead><tr><th>Code</th><th>Length</th><th>Pos 1</th><th>Pos 2-3</th><th>Pos 4-5</th><th>Pos 6-9</th><th>Pos 10-12</th><th>Pos 13-15</th></tr></thead>
+  <tbody>
+    <tr><td>CampaignAppealCode (Print &amp; Matchback)</td><td>9</td><td>TypePrefix</td><td>FY</td><td>Campaign #</td><td>SegmentCode</td><td>—</td><td>—</td></tr>
+    <tr><td>InternalAppealCode (Matchback only)</td><td>15</td><td>Program</td><td>FY</td><td>Month</td><td>SegmentCode</td><td>PackageCode</td><td>TestFlag</td></tr>
+  </tbody>
+</table>
+<p><strong>TypePrefix legend:</strong>  A = Appeal,  M = Mid-Level,  R = Renewal,  C = Cornerstone.</p>
+
+<h2>9. Reply Copy Tier</h2>
+<table>
+  <thead><tr><th>Tier</th><th>Criteria</th><th>Copy template key</th></tr></thead>
+  <tbody>
+    <tr><td>ACTIVE</td><td>Gave in current + prior FY</td><td><code>reply.active</code></td></tr>
+    <tr><td>LAPSED</td><td>Last gift &gt; 12 months</td><td><code>reply.lapsed</code></td></tr>
+    <tr><td>NEW</td><td>First gift in current FY</td><td><code>reply.new</code></td></tr>
+    <tr><td>REACTIVATED</td><td>12+ month gap, gave in last 12 months</td><td><code>reply.reactivated</code></td></tr>
+  </tbody>
+</table>
+
+<h2>10. Holdout &amp; Floor-Collapse Edge Cases</h2>
+<div class="narrative">
+<p><strong>5% holdout:</strong> A random 5% of each campaign's qualified universe is suppressed from the Print file (not mailed) and retained in the Matchback (with <code>Holdout=TRUE</code>) for ROI measurement. The same donor pool is used for control vs. treatment when comparing campaign performance.</p>
+<p><strong>Floor-collapse fallback:</strong> When any tier of the basis-driven ladder falls below the $15 floor, replace the whole ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently. Avoids non-monotonic outputs like <code>15 / 20 / 15</code> for tiny basis values.</p>
+<p><strong>Toggle exclude:</strong> Toggling a waterfall position OFF removes matching donors from the universe entirely <em>before</em> waterfall assignment runs. They do not fall through to a lower position. Cornerstone OFF means zero Cornerstone-flagged donors anywhere in the output.</p>
+</div>
+
+<h2>11. PackageCode Routing</h2>
+<table>
+  <thead><tr><th>Segment Family</th><th>Default Package</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Active Housefile (AH*)</td><td>P01</td><td>Standard DM package.</td></tr>
+    <tr><td>Lapsed Recent (LR*)</td><td>P01</td><td></td></tr>
+    <tr><td>Deep Lapsed (DL*)</td><td>P01</td><td></td></tr>
+    <tr><td>CBNC (CB*)</td><td>P01</td><td></td></tr>
+    <tr><td>Mid-Level (ML*)</td><td>P02</td><td>High-touch: better paper, first-class postage.</td></tr>
+    <tr><td>Mid-Level Prospect (MP*)</td><td>P01</td><td>Standard with upgrade messaging.</td></tr>
+    <tr><td>Cornerstone (CS*)</td><td>P03</td><td>Legacy ALM branding.</td></tr>
+    <tr><td>Major Gift (MJ*)</td><td>P04</td><td>Custom package; lettershop suppresses asks display.</td></tr>
+    <tr><td>Sustainer (SU*)</td><td>P01</td><td></td></tr>
+    <tr><td>New Donor (ND*)</td><td>P01</td><td></td></tr>
+  </tbody>
+</table>
+<p>Per-segment overrides live in the MIC <code>Segment Rules</code> tab; the table above is the default ladder. Lettershop sorts on PackageCode to route creative.</p>
+
+<h2>12. Output File Columns — Print</h2>
+<table>
+  <thead><tr><th>#</th><th>Column</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>DonorID</td><td><code>Constituent_Id__c</code> (zero-padded to 9)</td></tr>
+    <tr><td>2</td><td>CampaignAppealCode</td><td><code>&lt;TypePrefix&gt;&lt;YY&gt;&lt;CC&gt;&lt;SegmentCode&gt;</code></td></tr>
+    <tr><td>3</td><td>Scanline</td><td><code>&lt;DonorID&gt; &lt;CampaignAppealCode&gt; &lt;CheckDigit&gt;</code></td></tr>
+    <tr><td>4</td><td>PackageCode</td><td>Per-segment routing (Section 11)</td></tr>
+    <tr><td>5</td><td>Addressee</td><td><code>npo02__Formal_Greeting__c</code></td></tr>
+    <tr><td>6</td><td>Salutation</td><td><code>npo02__Informal_Greeting__c</code></td></tr>
+    <tr><td>7–8</td><td>FirstName, LastName</td><td><code>First_Name__c</code>, <code>Last_Name__c</code></td></tr>
+    <tr><td>9–13</td><td>Address1, Address2, City, State, ZIP</td><td><code>BillingStreet</code> (split), <code>BillingCity</code>, <code>BillingState</code>, <code>BillingPostalCode</code></td></tr>
+    <tr><td>14</td><td>Country</td><td><code>BillingCountry</code></td></tr>
+    <tr><td>15–17</td><td>AskAmount1, AskAmount2, AskAmount3</td><td>Ask ladder (Section 6)</td></tr>
+    <tr><td>18</td><td>AskAmountLabel</td><td>BLANK (donor fill-in line)</td></tr>
+    <tr><td>19</td><td>ReplyCopyTier</td><td>Lifecycle-derived (Section 9)</td></tr>
+    <tr><td>20–21</td><td>LastGiftAmount, LastGiftDate</td><td><code>npo02__LastOppAmount__c</code>, <code>npo02__LastCloseDate__c</code></td></tr>
+    <tr><td>22–23</td><td>CurrentFYGiving, PriorFYGiving</td><td><code>Total_Gifts_This_Fiscal_Year__c</code>, <code>Total_Gifts_Last_Fiscal_Year__c</code></td></tr>
+    <tr><td>24</td><td>CAVersion</td><td>TRUE if BillingState = CA AND campaign is CA-versioned</td></tr>
+  </tbody>
+</table>
+
+<h2>13. Output File Columns — Matchback</h2>
+<table>
+  <thead><tr><th>#</th><th>Column</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>DonorID</td><td><code>Constituent_Id__c</code> (zero-padded to 9)</td></tr>
+    <tr><td>2</td><td>CampaignAppealCode</td><td><code>&lt;TypePrefix&gt;&lt;YY&gt;&lt;CC&gt;&lt;SegmentCode&gt;</code></td></tr>
+    <tr><td>3</td><td>Scanline</td><td>Same as Print (full ALM 21-char with check digit)</td></tr>
+    <tr><td>4</td><td>InternalAppealCode</td><td><code>&lt;Program&gt;&lt;FY&gt;&lt;Month&gt;&lt;Segment&gt;&lt;Package&gt;&lt;Test&gt;</code></td></tr>
+    <tr><td>5–7</td><td>SegmentCode, SegmentName, PackageCode</td><td>Waterfall + routing</td></tr>
+    <tr><td>8</td><td>TestFlag</td><td>CTL / TSA / TSB</td></tr>
+    <tr><td>9–10</td><td>Addressee, Salutation</td><td>Formal / Informal greeting</td></tr>
+    <tr><td>11–12</td><td>FirstName, LastName</td><td></td></tr>
+    <tr><td>13–18</td><td>Address1 → Country</td><td></td></tr>
+    <tr><td>19–22</td><td>AskAmount1/2/3, AskAmountLabel</td><td>Ladder; AskAmountLabel BLANK</td></tr>
+    <tr><td>23</td><td>ReplyCopyTier</td><td></td></tr>
+    <tr><td>24–25</td><td>LastGiftAmount, LastGiftDate</td><td></td></tr>
+    <tr><td>26–27</td><td>CurrentFYGiving, PriorFYGiving</td><td></td></tr>
+    <tr><td>28</td><td>CumulativeGiving</td><td><code>npo02__TotalOppAmount__c</code></td></tr>
+    <tr><td>29</td><td>LifecycleStage</td><td></td></tr>
+    <tr><td>30</td><td>CAVersion</td><td></td></tr>
+    <tr><td>31</td><td>CornerstoneFlag</td><td><code>Cornerstone_Partner__c</code></td></tr>
+    <tr><td>32</td><td>Email</td><td><code>General_Email__c</code></td></tr>
+    <tr><td>33</td><td>SustainerFlag</td><td><code>Miracle_Partner__c</code></td></tr>
+    <tr><td>34</td><td>GiftCount12Mo</td><td><code>Gifts_in_L12M__c</code></td></tr>
+    <tr><td>35</td><td>RFMScore</td><td></td></tr>
+    <tr><td>36–37</td><td>Holdout, ExclusionReason</td><td></td></tr>
+    <tr><td>38</td><td>Account_CASESAFEID</td><td><code>Account_CASESAFEID__c</code> — 18-char SF Account Id, distinct from DonorID</td></tr>
+  </tbody>
+</table>
+
+<h2>14. Matchback Row Scope</h2>
+<div class="narrative">
+<p>Matchback's purpose is gift attribution: when a donor responds, the row recovers segment / package / test-cell detail. Rows that don't contribute to that join don't belong in the file.</p>
+<p><strong>Included:</strong></p>
+<ul>
+  <li>Mailed donors — <code>Holdout=FALSE AND ExclusionReason=""</code>. Match Print 1:1.</li>
+  <li>Holdouts — <code>Holdout=TRUE</code>. Kept regardless of any exclusion flag, for ROI measurement.</li>
+</ul>
+<p><strong>Excluded</strong> (these rows live in the Suppression Audit Log file in Drive, not Matchback):</p>
+<ul>
+  <li><code>Holdout=FALSE AND ExclusionReason="quantity_reduction"</code> — Pass 2 budget trim.</li>
+  <li><code>Holdout=FALSE AND ExclusionReason="missing_constituent_id"</code> — data quality.</li>
+  <li><code>Holdout=FALSE AND ExclusionReason="duplicate_constituent_id"</code> — data quality.</li>
+</ul>
+</div>
+
+</div>

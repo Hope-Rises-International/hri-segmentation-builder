@@ -1,0 +1,91 @@
+<div class="ref-content">
+<style>
+  .ref-content { font-size: 13px; line-height: 1.5; max-width: 1100px; }
+  .ref-content h1 { font-size: 18px; margin: 0 0 4px 0; }
+  .ref-content .ref-subtitle { font-size: 12px; color: var(--hri-muted); margin-bottom: 18px; }
+  .ref-content table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  .ref-content th, .ref-content td { border: 1px solid var(--hri-border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  .ref-content th { background: var(--hri-light); font-weight: 600; }
+</style>
+
+<h1>HRI Segmentation Builder — Button Reference</h1>
+<div class="ref-subtitle">Synced from SPEC.md v2026-04-27, deployed 2026-04-27. Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Button / Action</th>
+      <th>What It Does</th>
+      <th>When To Use</th>
+      <th>What Gets Written / Changed</th>
+      <th>Reversible?</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Refresh Universe</td>
+      <td>Re-fetches qualified universe from BQ cache. Applies exclusions (per OFF toggles), then waterfall + suppressions + segment assignment.</td>
+      <td>Campaign change, or SF data has changed since last pull.</td>
+      <td>Browser state.</td>
+      <td>Yes — re-click.</td>
+    </tr>
+    <tr>
+      <td>Run Projection</td>
+      <td>Computes economics per segment from Historical Baseline. Writes one row per segment to Draft tab.</td>
+      <td>After universe loaded; want to see projection.</td>
+      <td>Draft tab. Overwrites prior contents.</td>
+      <td>Yes — re-run.</td>
+    </tr>
+    <tr>
+      <td>Edit Scenario (per-segment toggles, % slider, target type)</td>
+      <td>Browser-side what-if. Adjusts inclusion / quantity. No new SF query.</td>
+      <td>Iterating to hit target.</td>
+      <td>UI only until Save / Approve.</td>
+      <td>Yes — toggle back.</td>
+    </tr>
+    <tr>
+      <td>Save Scenario</td>
+      <td>Saves current scenario state to Draft tab.</td>
+      <td>Iterating across sessions or sharing with Bill.</td>
+      <td>Draft tab updated.</td>
+      <td>Partial — overwrites prior Draft.</td>
+    </tr>
+    <tr>
+      <td>Approve</td>
+      <td>Locks Draft as final. Copies to Segment Detail tab. Triggers Generate Mailing File.</td>
+      <td>After sign-off.</td>
+      <td>Segment Detail tab + <code>link_to_segments</code> populated.</td>
+      <td>Difficult — re-run upserts on same Campaign + Segment.</td>
+    </tr>
+    <tr>
+      <td>Generate Mailing File</td>
+      <td>Produces Print + Matchback CSVs to Drive output folder. Matchback contains mailed + holdouts only (no trim residue).</td>
+      <td>Auto on Approve, or independent regeneration.</td>
+      <td>Two timestamped CSVs in Drive.</td>
+      <td>Yes — new files have new timestamp.</td>
+    </tr>
+    <tr>
+      <td>Load to Salesforce</td>
+      <td>DEFERRED. Will write Campaign + <code>Campaign_Segment__c</code> + CampaignMember post-merge-purge.</td>
+      <td>After Faircom returns merge / purge file (separate processor).</td>
+      <td>SF Campaign / Segment / Member / Account NCOA updates.</td>
+      <td>Idempotent upsert.</td>
+    </tr>
+    <tr>
+      <td>Download Print File</td>
+      <td>Direct download link from Drive.</td>
+      <td>Preparing transmission to Faircom.</td>
+      <td>Browser download.</td>
+      <td>N/A.</td>
+    </tr>
+    <tr>
+      <td>Download Matchback File</td>
+      <td>Direct download link from Drive.</td>
+      <td>Internal HRI use.</td>
+      <td>Browser download.</td>
+      <td>N/A.</td>
+    </tr>
+  </tbody>
+</table>
+
+</div>

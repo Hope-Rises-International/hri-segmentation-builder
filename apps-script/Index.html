@@ -220,6 +220,25 @@
 
     /* Hidden */
     .hidden { display: none; }
+
+    /* Top-tab nav: Build Campaign / Reference / Buttons */
+    .tab-btn {
+      background: transparent;
+      border: none;
+      border-bottom: 3px solid transparent;
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--hri-muted);
+      cursor: pointer;
+      margin-bottom: -1px;
+    }
+    .tab-btn:hover { color: var(--hri-teal); }
+    .tab-btn.tab-active {
+      color: var(--hri-teal);
+      border-bottom-color: var(--hri-teal);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -233,6 +252,24 @@
 </div>
 
 <div class="main">
+
+  <!-- Top tab navigation: Build Campaign | Reference | Buttons -->
+  <div class="tab-nav" role="tablist" style="display:flex;gap:6px;border-bottom:1px solid var(--hri-border);margin-bottom:18px">
+    <button class="tab-btn tab-active" data-tab="build" onclick="selectTab('build')">Build Campaign</button>
+    <button class="tab-btn" data-tab="reference" onclick="selectTab('reference')">Reference</button>
+    <button class="tab-btn" data-tab="buttons" onclick="selectTab('buttons')">Buttons</button>
+  </div>
+
+  <!-- Reference + Buttons content panels (hidden by default) -->
+  <div class="tab-panel hidden" id="tab-panel-reference">
+    <?!= include('Reference') ?>
+  </div>
+  <div class="tab-panel hidden" id="tab-panel-buttons">
+    <?!= include('Buttons') ?>
+  </div>
+
+  <!-- Build Campaign panel: existing UI, default visible -->
+  <div class="tab-panel" id="tab-panel-build">
 
   <!-- Step 1: Campaign Selection -->
   <div class="card" id="step-select">
@@ -420,18 +457,7 @@
     <div id="actuals-msg"></div>
   </div>
 
-  <!-- Operator documentation refresh — always visible at bottom -->
-  <div class="card" style="margin-top:12px">
-    <h3 style="margin-bottom:6px">Operator documentation</h3>
-    <p style="font-size:12px;color:var(--hri-muted);margin-bottom:10px">
-      Two MIC tabs — <strong>Logic &amp; Math Reference</strong> and <strong>Button Reference</strong> —
-      document every rule and UI action in operator-readable form. Re-run after any spec change ships.
-    </p>
-    <div class="action-bar">
-      <button class="btn btn-outline" onclick="refreshReferenceTabsUI()">Refresh Reference Tabs</button>
-    </div>
-    <div id="ref-tabs-msg"></div>
-  </div>
+  </div>  <!-- /#tab-panel-build -->
 
 </div>
 
@@ -1441,23 +1467,16 @@
       .saveDraftOverrides(overrides);
   }
 
-  // --- Approve ---
-  // --- Reference tab refresh ---
-  function refreshReferenceTabsUI() {
-    showMsg('ref-tabs-msg', 'info', '<span class="spinner"></span> Refreshing reference tabs...');
-    google.script.run
-      .withSuccessHandler(function(result) {
-        if (result && result.error) {
-          showMsg('ref-tabs-msg', 'error', result.error);
-        } else {
-          showMsg('ref-tabs-msg', 'success',
-            (result && result.message) || 'Reference tabs refreshed.');
-        }
-      })
-      .withFailureHandler(function(e) {
-        showMsg('ref-tabs-msg', 'error', 'Refresh failed: ' + e);
-      })
-      .refreshReferenceTabs();
+  // --- Top-tab navigation (Build Campaign / Reference / Buttons) ---
+  function selectTab(name) {
+    var panels = document.querySelectorAll('.tab-panel');
+    panels.forEach(function(p) { p.classList.add('hidden'); });
+    var btns = document.querySelectorAll('.tab-btn');
+    btns.forEach(function(b) { b.classList.remove('tab-active'); });
+    var panel = document.getElementById('tab-panel-' + name);
+    if (panel) panel.classList.remove('hidden');
+    var btn = document.querySelector('.tab-btn[data-tab="' + name + '"]');
+    if (btn) btn.classList.add('tab-active');
   }
 
   // --- Actuals ---
