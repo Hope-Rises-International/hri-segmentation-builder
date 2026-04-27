@@ -675,3 +675,313 @@ function updateActuals(campaignId, actuals) {
 // SF Uploader build now (bundling what Bekah and Jessica do together).
 // The Drive output-files listing also moved out of this UI — operators
 // navigate the shared Drive folder directly.
+
+
+// --- Operator Documentation Tabs (SPEC §17) ---
+//
+// Two tabs in the MIC document the engine's logic and the UI buttons in
+// language Jessica + Bill can read. Refreshed by refreshReferenceTabs(),
+// either via the "Refresh Reference Tabs" button in the web app or by
+// running the function from the Apps Script editor after a spec change.
+// Content mirrors the architect's 2026-04-27 instruction; once SPEC.md
+// §17.1/§17.2 land in main, this content should be regenerated from
+// the spec rather than hand-curated here.
+
+const SPEC_VERSION = '2026-04-27';
+const TAB_LOGIC_REFERENCE  = 'Logic & Math Reference';
+const TAB_BUTTON_REFERENCE = 'Button Reference';
+
+function refreshReferenceTabs() {
+  const ss = SpreadsheetApp.openById(MIC_SHEET_ID);
+  const ts = new Date().toISOString();
+  _writeLogicReferenceTab_(ss, ts);
+  _writeButtonReferenceTab_(ss, ts);
+  return {
+    status: 'success',
+    message: 'Reference tabs refreshed at ' + ts,
+    spec_version: SPEC_VERSION,
+  };
+}
+
+function _ensureTab_(ss, name, rows, cols) {
+  let ws = ss.getSheetByName(name);
+  if (!ws) ws = ss.insertSheet(name);
+  ws.clear();
+  if (ws.getMaxRows() < rows) ws.insertRowsAfter(ws.getMaxRows(), rows - ws.getMaxRows());
+  if (ws.getMaxColumns() < cols) ws.insertColumnsAfter(ws.getMaxColumns(), cols - ws.getMaxColumns());
+  return ws;
+}
+
+function _writeBlock_(ws, startRow, values) {
+  if (!values || values.length === 0) return startRow;
+  const cols = Math.max.apply(null, values.map(r => r.length));
+  // pad to rectangular
+  const padded = values.map(r => {
+    const p = r.slice();
+    while (p.length < cols) p.push('');
+    return p;
+  });
+  ws.getRange(startRow, 1, padded.length, cols).setValues(padded);
+  return startRow + padded.length;
+}
+
+function _writeSectionHeader_(ws, row, title) {
+  ws.getRange(row, 1).setValue(title);
+  ws.getRange(row, 1).setFontWeight('bold');
+  return row + 1;
+}
+
+function _writeLogicReferenceTab_(ss, ts) {
+  const ws = _ensureTab_(ss, TAB_LOGIC_REFERENCE, 400, 8);
+  let r = 1;
+  ws.getRange(1, 1).setValue('HRI Segmentation Builder — Logic & Math Reference').setFontWeight('bold');
+  ws.getRange(2, 1).setValue(
+    'Synced from SPEC.md v' + SPEC_VERSION + '. Last refreshed: ' + ts +
+    '. Do not edit directly — re-run "Refresh Reference Tabs" from the web app after any spec change.');
+  r = 4;
+
+  // 1. Waterfall Hierarchy
+  r = _writeSectionHeader_(ws, r, '1. Waterfall Hierarchy');
+  r = _writeBlock_(ws, r, [
+    ['Position', 'Position Name', 'Field / Logic', 'Toggle Default', 'Notes'],
+    ['1', 'Global Suppression (Tier 1 hard)', 'Always-on suppressions', 'Always ON', 'See section 2.'],
+    ['2', 'Major Gift Portfolio', 'Staff_Manager__c populated', 'ON', 'Toggle OFF excludes from universe.'],
+    ['3', 'Mid-Level', 'Cumulative $1k–$5k AND active 24mo', 'ON', 'Toggle OFF excludes from universe.'],
+    ['4', 'Monthly Sustainers', 'Miracle_Partner__c = TRUE', 'OFF', 'Toggle OFF (default) excludes from general appeals.'],
+    ['5', 'Cornerstone Partners', 'Cornerstone_Partner__c = TRUE', 'ON', 'Toggle OFF excludes from universe entirely.'],
+    ['6', 'New Donor', 'Lifecycle = New Donor (90-day welcome)', 'OFF', 'Toggle OFF (default) excludes new donors.'],
+    ['7', 'Active Housefile — High Value', 'R1–R2 + F1–F2 + M1–M2', 'ON', 'Sub-segments AH01–AH03.'],
+    ['8', 'Active Housefile — Standard', 'R2 remaining', 'ON', 'Sub-segments AH04–AH06.'],
+    ['9', 'Mid-Level Prospect', 'Cumulative $500–$999 AND active 24mo', 'ON', 'MP01.'],
+    ['10', 'Lapsed Recent', 'R3 (13–24mo) + 2+ lifetime gifts', 'ON', 'LR01 (13–18), LR02 (19–24).'],
+    ['11', 'Deep Lapsed', 'R4–R5 (25–48mo) + cumulative ≥ $10', 'ON', 'DL01–DL04 by recency × monetary.'],
+    ['12', 'CBNC Flag Override', 'Pre-computed CBNC flag', 'Always ON', 'Catches anyone unassigned by 2–11.'],
+  ]);
+  r += 1;
+
+  // 2. Tier 1 Suppression
+  r = _writeSectionHeader_(ws, r, '2. Suppression — Tier 1 (hard, always ON)');
+  r = _writeBlock_(ws, r, [
+    ['#', 'Rule', 'Field', 'Notes'],
+    ['1', 'All household members deceased', 'npsp__All_Members_Deceased__c', 'Single-contact-deceased is Tier 3.'],
+    ['2', 'Do Not Contact', 'Do_Not_Contact__c', ''],
+    ['3', 'No Mail Code', 'No_Mail_Code__c', ''],
+    ['4', 'Undeliverable Address', 'npsp__Undeliverable_Address__c', ''],
+    ['5', 'NCOA Deceased', 'NCOA_Deceased_Processing__c', ''],
+    ['6', 'Blank Address', 'BillingStreet / BillingCity / BillingPostalCode null', 'Any one blank → suppress.'],
+  ]);
+  r += 1;
+
+  // 3. Tier 2 Suppression
+  r = _writeSectionHeader_(ws, r, '3. Suppression — Tier 2 (communication preferences, default ON)');
+  r = _writeBlock_(ws, r, [
+    ['#', 'Rule', 'Field', 'Default', 'Conditional Logic'],
+    ['1', 'Newsletters Only', 'Newsletters_Only__c', 'ON', 'Suppress for non-newsletter campaigns.'],
+    ['2', 'Newsletter and Prospectus Only', 'Newsletter_and_Prospectus_Only__c', 'ON', 'Same — only newsletters/prospectus.'],
+    ['3', 'No Name Sharing', 'No_Name_Sharing__c', 'ON', 'Suppress from acquisition campaigns only.'],
+    ['4', 'Match Only', 'Match_Only__c', 'ON', 'Suppress from non-matching-gift campaigns.'],
+    ['5', 'Address Unknown', 'Address_Unknown__c', 'ON', 'Hard-suppress mail.'],
+    ['6', 'Not Deliverable', 'Not_Deliverable__c', 'ON', 'Hard-suppress mail.'],
+  ]);
+  r += 1;
+
+  // 4. Tier 3 Suppression
+  r = _writeSectionHeader_(ws, r, '4. Suppression — Tier 3 (rare/legacy, default OFF)');
+  r = _writeBlock_(ws, r, [
+    ['#', 'Rule', 'Field', 'Default', 'Conditional Logic'],
+    ['1', 'Primary Contact Deceased', 'Primary_Contact_is_Deceased__c', 'OFF', 'Some households still mail-eligible via spouse.'],
+    ['2', 'X1 Mailing Christmas Catalog Only', 'X1_Mailing_Xmas_Catalog__c', 'OFF', 'Suppress except for Christmas Catalog.'],
+    ['3', 'X2 Mailings Christmas Appeal Only', 'X2_Mailings_Xmas_Appeal__c', 'OFF', 'Suppress except for Christmas Appeal.'],
+  ]);
+  r += 1;
+
+  // 5. Segment-Level Suppression Rules
+  r = _writeSectionHeader_(ws, r, '5. Segment-Level Suppression Rules');
+  r = _writeBlock_(ws, r, [
+    ['Rule', 'Default', 'State', 'Notes'],
+    ['Recent-gift suppression', 'ON', 'Active', 'Skip donors who gave in last 21 days.'],
+    ['Break-even suppression', 'ON', 'Active', 'Drop segments below break-even RR.'],
+    ['Response-rate floor', 'ON', 'Active', 'Drop segments below configured RR floor.'],
+    ['Frequency cap', 'ON', 'Active', 'Skip donors who already received N appeals this FY.'],
+    ['5% holdout', 'ON', 'Active', 'Random 5% suppressed-segment holdout for measurement.'],
+  ]);
+  r += 1;
+
+  // 6. Ask String Math
+  r = _writeSectionHeader_(ws, r, '6. Ask String Math');
+  r = _writeBlock_(ws, r, [
+    ['Step', 'Rule'],
+    ['Basis', 'Active / Mid-Level / MP / Cornerstone use HPC (npo02__LargestAmount__c). Lapsed / Deep Lapsed / CBNC use MRC (npo02__LastOppAmount__c).'],
+    ['Ladder', 'AskAmount1 = basis × 1.0,  AskAmount2 = basis × 1.5,  AskAmount3 = basis × 2.0.'],
+    ['Rounding', 'UP to nearest $5 below $100, UP to nearest $25 at/above $100.'],
+    ['Floor / Ceiling', 'Floor = $15, Ceiling = $4,975 (rounded down to $25 increments).'],
+    ['Floor-collapse fallback', 'If ANY raw tier (basis × multiplier) is < $15 floor, replace the WHOLE ladder with $15 / $25 / $35 as a unit. Never re-floor tiers independently.'],
+    ['Mid-Level / Major', 'ML*, MJ*, MP*, CS01, SU01: AskAmount1/2/3 always populated regardless of segment. Letterhead template controls display.'],
+    ['AskAmountLabel', 'ALWAYS BLANK in CSV. Donor fill-in line; the lettershop renders the static label.'],
+  ]);
+  r += 1;
+
+  // 7. Scanline & Check Digit
+  r = _writeSectionHeader_(ws, r, '7. Scanline & Check Digit');
+  r = _writeBlock_(ws, r, [
+    ['Field', 'Definition'],
+    ['Format', '<DonorID:9> <CampaignAppealCode:9> <CheckDigit:1> — 21 chars total, two literal spaces.'],
+    ['DonorID', '9 chars; numeric Constituent_Id zero-padded; S-prefixed pass through.'],
+    ['CampaignAppealCode', '<TypePrefix:1><FY:2><Campaign:2><SegmentCode:4>.  e.g. A2651AH01.'],
+    ['Check digit step 1', 'Treat the 18-char (DonorID+AppealCode) as 18 individual chars.'],
+    ['Check digit step 2', 'Replace alpha → digit per table: A=1 B=2 C=3 D=4 E=5 F=6 G=7 H=8 I=9 / J=1 K=2 L=3 M=4 N=5 O=6 P=7 Q=8 R=9 / S=2 T=3 U=4 V=5 W=6 X=7 Y=8 Z=9. Numerics keep value.'],
+    ['Check digit step 3', 'Alternating weights 1, 2, 1, 2, … across 18 positions.'],
+    ['Check digit step 4', 'Multiply value × weight per position.'],
+    ['Check digit step 5', 'If product > 9, subtract 9; otherwise keep.'],
+    ['Check digit step 6', 'Sum all 18 step-5 values.'],
+    ['Check digit step 7', 'CheckDigit = (10 − (sum mod 10)) mod 10.'],
+    ['Worked example', '070122327W16B1AJ30 → CD 6.  Full scanline: "070122327 W16B1AJ30 6".'],
+  ]);
+  r += 1;
+
+  // 8. Appeal Code Structure
+  r = _writeSectionHeader_(ws, r, '8. Appeal Code Structure');
+  r = _writeBlock_(ws, r, [
+    ['Code', 'Length', 'Position 1', 'Pos 2-3', 'Pos 4-5', 'Pos 6-9', 'Pos 10-12', 'Pos 13-15'],
+    ['CampaignAppealCode (Print)', '9', 'TypePrefix', 'FY', 'Campaign #', 'SegmentCode', '—', '—'],
+    ['InternalAppealCode (Matchback only)', '15', 'Program', 'FY', 'Month', 'SegmentCode', 'PackageCode', 'TestFlag'],
+    ['TypePrefix legend', '', 'A = Appeal,  M = Mid-Level,  R = Renewal,  C = Cornerstone', '', '', '', '', ''],
+  ]);
+  r += 1;
+
+  // 9. Reply Copy Tier
+  r = _writeSectionHeader_(ws, r, '9. Reply Copy Tier');
+  r = _writeBlock_(ws, r, [
+    ['Tier', 'Criteria', 'Copy template key'],
+    ['ACTIVE', 'Gave in current + prior FY', 'reply.active'],
+    ['LAPSED', 'Last gift > 12 months', 'reply.lapsed'],
+    ['NEW', 'First gift in current FY', 'reply.new'],
+    ['REACTIVATED', '12+ month gap, gave in last 12 months', 'reply.reactivated'],
+  ]);
+  r += 1;
+
+  // 10. Holdout & Floor Collapse Edge Cases
+  r = _writeSectionHeader_(ws, r, '10. Holdout & Floor-Collapse Edge Cases');
+  r = _writeBlock_(ws, r, [
+    ['Topic', 'Rule'],
+    ['5% holdout', 'Random 5% of each campaign suppressed from Print. Kept in Matchback (Holdout=TRUE) for measurement.'],
+    ['Floor-collapse', 'When any tier of basis × multiplier < $15 floor, replace WHOLE ladder with $15/$25/$35 as a unit (not per-tier re-floor).'],
+    ['Toggle exclude', 'Toggle OFF removes matching donors from the universe entirely BEFORE waterfall runs (no fall-through).'],
+  ]);
+  r += 1;
+
+  // 11. PackageCode Routing
+  r = _writeSectionHeader_(ws, r, '11. PackageCode Routing');
+  r = _writeBlock_(ws, r, [
+    ['Segment Family', 'Default Package', 'Notes'],
+    ['Active Housefile (AH*)', 'P01', 'Standard DM package.'],
+    ['Lapsed Recent (LR*)', 'P01', ''],
+    ['Deep Lapsed (DL*)', 'P01', ''],
+    ['CBNC (CB*)', 'P01', ''],
+    ['Mid-Level (ML*)', 'P02', 'High-touch: better paper, first-class postage.'],
+    ['Mid-Level Prospect (MP*)', 'P01', 'Standard with upgrade messaging.'],
+    ['Cornerstone (CS*)', 'P03', 'Legacy ALM branding.'],
+    ['Major Gift (MJ*)', 'P04', 'Custom package, no ask amounts on reply device (template suppresses display).'],
+    ['Sustainer (SU*)', 'P01', ''],
+    ['New Donor (ND*)', 'P01', ''],
+    ['Override mechanism', '—', 'Per-segment overrides live in MIC Segment Rules tab; default ladder above.'],
+  ]);
+  r += 1;
+
+  // 12. Print columns
+  r = _writeSectionHeader_(ws, r, '12. Output File Columns — Print');
+  r = _writeBlock_(ws, r, [
+    ['#', 'Column', 'Source'],
+    ['1', 'DonorID', 'Constituent_Id__c (zero-padded to 9)'],
+    ['2', 'CampaignAppealCode', '<TypePrefix><YY><CC><SegmentCode>'],
+    ['3', 'Scanline', '<DonorID> <CampaignAppealCode> <CheckDigit>'],
+    ['4', 'PackageCode', 'Per-segment routing (Section 11)'],
+    ['5', 'Addressee', 'npo02__Formal_Greeting__c'],
+    ['6', 'Salutation', 'npo02__Informal_Greeting__c'],
+    ['7–8', 'FirstName, LastName', 'First_Name__c, Last_Name__c'],
+    ['9–13', 'Address1, Address2, City, State, ZIP', 'BillingStreet (split), BillingCity, BillingState, BillingPostalCode'],
+    ['14', 'Country', 'BillingCountry'],
+    ['15–17', 'AskAmount1, AskAmount2, AskAmount3', 'Ask ladder (Section 6)'],
+    ['18', 'AskAmountLabel', 'BLANK (donor fill-in line)'],
+    ['19', 'ReplyCopyTier', 'Lifecycle-derived (Section 9)'],
+    ['20–21', 'LastGiftAmount, LastGiftDate', 'npo02__LastOppAmount__c, npo02__LastCloseDate__c'],
+    ['22–23', 'CurrentFYGiving, PriorFYGiving', 'Total_Gifts_This_Fiscal_Year__c, Total_Gifts_Last_Fiscal_Year__c'],
+    ['24', 'CAVersion', 'TRUE if BillingState = CA AND campaign is CA-versioned'],
+  ]);
+  r += 1;
+
+  // 13. Matchback columns
+  r = _writeSectionHeader_(ws, r, '13. Output File Columns — Matchback');
+  r = _writeBlock_(ws, r, [
+    ['#', 'Column', 'Source'],
+    ['1', 'DonorID', 'Constituent_Id__c (zero-padded to 9)'],
+    ['2', 'CampaignAppealCode', '<TypePrefix><YY><CC><SegmentCode>'],
+    ['3', 'Scanline', 'Same as Print (full ALM 21-char with check digit)'],
+    ['4', 'InternalAppealCode', '<Program><FY><Month><Segment><Package><Test>'],
+    ['5–7', 'SegmentCode, SegmentName, PackageCode', 'Waterfall + routing'],
+    ['8', 'TestFlag', 'CTL / TSA / TSB'],
+    ['9–10', 'Addressee, Salutation', 'Formal / Informal greeting'],
+    ['11–12', 'FirstName, LastName', ''],
+    ['13–18', 'Address1–Country', ''],
+    ['19–22', 'AskAmount1, 2, 3, AskAmountLabel', 'Ladder; AskAmountLabel BLANK'],
+    ['23', 'ReplyCopyTier', ''],
+    ['24–25', 'LastGiftAmount, LastGiftDate', ''],
+    ['26–27', 'CurrentFYGiving, PriorFYGiving', ''],
+    ['28', 'CumulativeGiving', 'npo02__TotalOppAmount__c'],
+    ['29', 'LifecycleStage', ''],
+    ['30', 'CAVersion', ''],
+    ['31', 'CornerstoneFlag', 'Cornerstone_Partner__c'],
+    ['32', 'Email', 'General_Email__c'],
+    ['33', 'SustainerFlag', 'Miracle_Partner__c'],
+    ['34', 'GiftCount12Mo', 'Gifts_in_L12M__c'],
+    ['35', 'RFMScore', ''],
+    ['36–37', 'Holdout, ExclusionReason', ''],
+    ['38', 'Account_CASESAFEID', 'Account_CASESAFEID__c (18-char SF Account Id, distinct from DonorID)'],
+  ]);
+  r += 1;
+
+  // 14. Matchback row scope
+  r = _writeSectionHeader_(ws, r, '14. Matchback Row Scope');
+  r = _writeBlock_(ws, r, [
+    ['Included rows'],
+    ['Mailed donors: Holdout=FALSE AND ExclusionReason="" — match Print 1:1.'],
+    ['Holdouts: Holdout=TRUE — kept for ROI measurement regardless of any exclusion flag.'],
+    ['Excluded rows (go to suppression audit log file, not Matchback)'],
+    ['Holdout=FALSE AND ExclusionReason="quantity_reduction" (Pass 2 budget trim).'],
+    ['Holdout=FALSE AND ExclusionReason="missing_constituent_id" (data quality).'],
+    ['Holdout=FALSE AND ExclusionReason="duplicate_constituent_id" (data quality).'],
+    ['Why', 'Matchback supports gift attribution. Donors who weren\'t mailed and aren\'t a measurement control have no role in the join. Trim audit lives in the suppression audit log file alongside Print + Matchback.'],
+  ]);
+
+  // Format
+  ws.setColumnWidth(1, 220);
+  for (let c = 2; c <= 6; c++) ws.setColumnWidth(c, 280);
+  ws.setFrozenRows(2);
+}
+
+function _writeButtonReferenceTab_(ss, ts) {
+  const ws = _ensureTab_(ss, TAB_BUTTON_REFERENCE, 60, 5);
+  ws.getRange(1, 1).setValue('HRI Segmentation Builder — Button Reference').setFontWeight('bold');
+  ws.getRange(2, 1).setValue(
+    'Synced from SPEC.md v' + SPEC_VERSION + '. Last refreshed: ' + ts +
+    '. Do not edit directly — re-run "Refresh Reference Tabs" from the web app after any spec change.');
+
+  const rows = [
+    ['Button / Action', 'What It Does', 'When To Use', 'What Gets Written / Changed', 'Reversible?'],
+    ['Refresh Universe', 'Re-fetches qualified universe from BQ cache. Applies exclusions (per OFF toggles), then waterfall + suppressions + segment assignment.', 'Campaign change, or SF data has changed since last pull.', 'Browser state.', 'Yes — re-click.'],
+    ['Run Projection', 'Computes economics per segment from Historical Baseline. Writes one row per segment to Draft tab.', 'After universe loaded; want to see projection.', 'Draft tab. Overwrites prior contents.', 'Yes — re-run.'],
+    ['Edit Scenario (per-segment toggles, % slider, target type)', 'Browser-side what-if. Adjusts inclusion/quantity. No new SF query.', 'Iterating to hit target.', 'UI only until Save/Approve.', 'Yes — toggle back.'],
+    ['Save Scenario', 'Saves current scenario state to Draft tab.', 'Iterating across sessions or sharing with Bill.', 'Draft tab updated.', 'Partial — overwrites prior Draft.'],
+    ['Approve', 'Locks Draft as final. Copies to Segment Detail tab. Triggers Generate Mailing File.', 'After sign-off.', 'Segment Detail tab + link_to_segments populated.', 'Difficult — re-run upserts on same Campaign + Segment.'],
+    ['Generate Mailing File', 'Produces Print + Matchback CSVs to Drive output folder. Matchback contains mailed + holdouts only (no trim residue).', 'Auto on Approve, or independent regeneration.', 'Two timestamped CSVs in Drive.', 'Yes — new files have new timestamp.'],
+    ['Load to Salesforce', 'DEFERRED. Will write Campaign + Campaign_Segment__c + CampaignMember post-merge-purge.', 'After Faircom returns merge/purge file (separate processor).', 'SF Campaign / Segment / Member / Account NCOA updates.', 'Idempotent upsert.'],
+    ['Refresh Reference Tabs', 'Regenerates Logic & Math Reference and Button Reference tabs from SPEC.md §17.', 'After any spec change is shipped.', 'Both reference tabs rewritten in place.', 'Yes — re-run.'],
+    ['Download Print File', 'Direct download link from Drive.', 'Preparing transmission to Faircom.', 'Browser download.', 'N/A.'],
+    ['Download Matchback File', 'Direct download link from Drive.', 'Internal HRI use.', 'Browser download.', 'N/A.'],
+  ];
+  ws.getRange(4, 1, rows.length, 5).setValues(rows);
+  ws.getRange(4, 1, 1, 5).setFontWeight('bold');
+  ws.setColumnWidths(1, 1, 240);
+  for (let c = 2; c <= 5; c++) ws.setColumnWidth(c, 320);
+  ws.setFrozenRows(4);
+}

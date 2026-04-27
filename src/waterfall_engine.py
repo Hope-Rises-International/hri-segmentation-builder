@@ -158,6 +158,76 @@ def run_waterfall(
     logger.info(f"  --- Total Tier 1 suppressed: {suppressed_count:,} ---")
 
     # ===================================================================
+    # Toggle-Exclude Pass (Bill 2026-04-27)
+    # OFF toggle removes matching donors from the universe entirely
+    # rather than letting them fall through to the next active position.
+    # "Cornerstone OFF" means zero Cornerstone-flagged donors anywhere
+    # in the output, not "skip CS01 and let them land in AH01/ML01/etc."
+    # ===================================================================
+    total_gifts_pre = pd.to_numeric(accts["npo02__NumberOfClosedOpps__c"], errors="coerce").fillna(0)
+
+    def _exclude_off(toggle_key, default_on, mask, position_label):
+        """Suppress mask-matching donors when this toggle is OFF."""
+        if toggles.get(toggle_key, default_on):
+            return
+        _suppress(mask, f"Toggle Exclude: {position_label}")
+
+    _exclude_off(
+        "major_gift", True,
+        accts.get("Staff_Manager__c", pd.Series(None, index=accts.index)).notna()
+        & (accts.get("Staff_Manager__c", pd.Series("", index=accts.index)) != ""),
+        "Major Gift Portfolio",
+    )
+    _exclude_off(
+        "mid_level", True,
+        (cumulative >= MID_LEVEL_MIN) & (cumulative <= MID_LEVEL_MAX)
+        & (months_since_last <= MID_LEVEL_ACTIVE_MONTHS),
+        "Mid-Level",
+    )
+    # Sustainers default OFF — under new semantics, default-OFF means the
+    # entire population is excluded from general appeals (matches prior
+    # behavior where Miracle_Partner donors were never mailed by default).
+    _exclude_off(
+        "sustainer", False,
+        accts.get("Miracle_Partner__c", pd.Series(False, index=accts.index)) == True,
+        "Sustainers",
+    )
+    _exclude_off(
+        "cornerstone", True,
+        accts.get("Cornerstone_Partner__c", pd.Series(False, index=accts.index)) == True,
+        "Cornerstone",
+    )
+    _exclude_off(
+        "new_donor", False,
+        accts["lifecycle_stage"] == "New Donor",
+        "New Donor",
+    )
+    _exclude_off(
+        "active_housefile", True,
+        accts["R_bucket"].isin(["R1", "R2"]),
+        "Active Housefile",
+    )
+    _exclude_off(
+        "mid_level_prospect", True,
+        (cumulative >= MID_LEVEL_PROSPECT_MIN) & (cumulative <= MID_LEVEL_PROSPECT_MAX)
+        & (months_since_last <= MID_LEVEL_ACTIVE_MONTHS),
+        "Mid-Level Prospect",
+    )
+    _exclude_off(
+        "lapsed", True,
+        (accts["R_bucket"] == "R3") & (total_gifts_pre >= 2),
+        "Lapsed Recent",
+    )
+    _exclude_off(
+        "deep_lapsed", True,
+        accts["R_bucket"].isin(["R4", "R5"]) & (cumulative >= 10) & (months_since_last <= 48),
+        "Deep Lapsed",
+    )
+
+    toggle_excluded = (suppression_reason.str.startswith("Toggle Exclude:")).sum()
+    logger.info(f"  --- Toggle-exclude removed: {toggle_excluded:,} ---")
+
+    # ===================================================================
     # Position 2: MAJOR GIFT PORTFOLIO [toggle-gated]
     # ===================================================================
     if toggles.get("major_gift", True):

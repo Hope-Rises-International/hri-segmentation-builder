@@ -156,17 +156,11 @@ def compute_ask_strings(
                 inc = params["high_increment"] if clamped_asks[1] >= params["high_threshold"] else params["low_increment"]
                 clamped_asks[2] = min(clamped_asks[1] + inc, rounded_ceiling)
 
-        # AskAmountLabel always sources from HPC ("Best Gift of $___").
-        # When HPC is null/0 (donor with no recorded high gift), fall back
-        # to the largest ask tier so the reply device never prints
-        # "Best Gift of $0.00" or blank.
-        hpc_value = hpc.get(acct_id, 0) or 0
-        if hpc_value > 0:
-            label_amount = float(hpc_value)
-        else:
-            label_amount = float(clamped_asks[2])
-        ask_label = f"Best Gift of ${label_amount:,.2f}"
-
+        # AskAmountLabel intentionally blank. Bill 2026-04-27: TLC's
+        # production mid-level matchback uses this column as a fill-in
+        # line for the donor; the lettershop template renders the
+        # static label and HRI does not anchor it. Column stays in the
+        # schema for column-count stability but holds no value.
         asks.append({
             "account_id": acct_id,
             "ask_basis": basis_type,
@@ -174,7 +168,7 @@ def compute_ask_strings(
             "ask1": clamped_asks[0],
             "ask2": clamped_asks[1],
             "ask3": clamped_asks[2],
-            "ask_label": ask_label,
+            "ask_label": "",
         })
 
     df = pd.DataFrame(asks)

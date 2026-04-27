@@ -273,8 +273,18 @@ def generate_output_files(
     printer_mask = (~master["_is_excluded"]) & (~master["Holdout"])
     printer_df = master.loc[printer_mask, PRINTER_COLUMNS].copy()
 
-    # --- Matchback File: all records ---
-    matchback_df = master[MATCHBACK_COLUMNS].copy()
+    # --- Matchback File: mailed + holdouts only ---
+    # Bill 2026-04-27: trim residue (quantity_reduction) and data-quality
+    # exclusions (missing/duplicate Constituent_Id) leave the Matchback.
+    # Their purpose is gift attribution: when a donor responds, the
+    # Matchback row recovers segment/package/test detail. Donors who
+    # weren't mailed and aren't a measurement control have no role here.
+    # Audit trail for trimmed donors lives in the suppression audit log.
+    matchback_mask = (
+        ((~master["_is_excluded"]) & (~master["Holdout"]))   # mailed
+        | master["Holdout"]                                   # holdouts (regardless of exclusion)
+    )
+    matchback_df = master.loc[matchback_mask, MATCHBACK_COLUMNS].copy()
 
     # --- Validations ---
     warnings = []

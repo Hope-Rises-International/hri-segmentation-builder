@@ -420,6 +420,19 @@
     <div id="actuals-msg"></div>
   </div>
 
+  <!-- Operator documentation refresh — always visible at bottom -->
+  <div class="card" style="margin-top:12px">
+    <h3 style="margin-bottom:6px">Operator documentation</h3>
+    <p style="font-size:12px;color:var(--hri-muted);margin-bottom:10px">
+      Two MIC tabs — <strong>Logic &amp; Math Reference</strong> and <strong>Button Reference</strong> —
+      document every rule and UI action in operator-readable form. Re-run after any spec change ships.
+    </p>
+    <div class="action-bar">
+      <button class="btn btn-outline" onclick="refreshReferenceTabsUI()">Refresh Reference Tabs</button>
+    </div>
+    <div id="ref-tabs-msg"></div>
+  </div>
+
 </div>
 
 <script>
@@ -1429,6 +1442,24 @@
   }
 
   // --- Approve ---
+  // --- Reference tab refresh ---
+  function refreshReferenceTabsUI() {
+    showMsg('ref-tabs-msg', 'info', '<span class="spinner"></span> Refreshing reference tabs...');
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result && result.error) {
+          showMsg('ref-tabs-msg', 'error', result.error);
+        } else {
+          showMsg('ref-tabs-msg', 'success',
+            (result && result.message) || 'Reference tabs refreshed.');
+        }
+      })
+      .withFailureHandler(function(e) {
+        showMsg('ref-tabs-msg', 'error', 'Refresh failed: ' + e);
+      })
+      .refreshReferenceTabs();
+  }
+
   // --- Actuals ---
   function submitActuals() {
     if (!selectedCampaign) return;
