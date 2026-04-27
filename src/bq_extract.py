@@ -33,7 +33,7 @@ BQ_ACCOUNTS_FINAL = f"{GCP_PROJECT}.{BQ_DATASET}.accounts"
 
 # Account SOQL — all rollup fields + per-FY gift counts for CBNC approximation
 ACCOUNT_SOQL = """
-SELECT Id, Name, Constituent_Id__c,
+SELECT Id, Name, Constituent_Id__c, Account_CASESAFEID__c,
        First_Name__c, Last_Name__c, Special_Salutation__c,
        npo02__Formal_Greeting__c, npo02__Informal_Greeting__c,
        npo02__LastCloseDate__c, npo02__FirstCloseDate__c,

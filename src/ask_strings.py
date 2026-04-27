@@ -21,7 +21,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Default parameters (configurable per campaign)
+# Default parameters (configurable per campaign).
+# `fallback_ladder` is the floor-collapse replacement applied as a unit
+# when ANY tier of the basis-driven ladder falls below `floor` — see
+# spec §8.2 / Bill 2026-04-27. Operator-configurable via Segment Rules.
 DEFAULT_ASK_PARAMS = {
     "multipliers": [1.0, 1.5, 2.0],
     "floor": 15.0,
@@ -30,17 +33,24 @@ DEFAULT_ASK_PARAMS = {
     "high_threshold": 100.0,  # At or above, round to nearest $25
     "low_increment": 5,
     "high_increment": 25,
+    "fallback_ladder": [15.0, 25.0, 35.0],
 }
 
-# Segment codes that use HPC as basis
+# Segment codes that use HPC as basis. Per Bill 2026-04-27, all Mid-Level
+# (ML*), Mid-Level Prospect (MP*), Major Gift (MJ*), Cornerstone (CS01)
+# and Sustainer (SU01) segments must ALWAYS produce ask arrays — the
+# lettershop template controls whether asks render on the printed reply
+# device, not the builder.
 HPC_SEGMENTS = {"AH01", "AH02", "AH03", "AH04", "AH05", "AH06",
-                "ML01", "MP01", "CS01"}
+                "ML01", "MP01", "CS01", "MJ01", "SU01"}
 # Segment codes that use MRC as basis
 MRC_SEGMENTS = {"LR01", "LR02", "DL01", "DL02", "DL03", "DL04", "CB01"}
 # New donor uses first gift
 NEW_DONOR_SEGMENTS = {"ND01"}
-# Major gift has no ask amounts
-NO_ASK_SEGMENTS = {"MJ01", "SU01"}
+# Major Gift Portfolio donors with a populated Staff_Manager — same
+# always-populate rule as MJ01 above. Detected at runtime via the
+# Staff_Manager__c column in accounts_df.
+NO_ASK_SEGMENTS: set = set()
 
 
 def _round_up(amount: float, increment: int) -> float:
@@ -104,23 +114,13 @@ def compute_ask_strings(
         & (~waterfall_result.get("budget_trimmed", pd.Series(False)))
     ].copy()
 
+    fallback_ladder = list(params.get("fallback_ladder", [15.0, 25.0, 35.0]))
+    rounded_ceiling = math.floor(ceiling / params["high_increment"]) * params["high_increment"]
+
     asks = []
     for _, row in assigned.iterrows():
         acct_id = row["account_id"]
         seg = row["segment_code"]
-
-        # Determine basis
-        if seg in NO_ASK_SEGMENTS:
-            asks.append({
-                "account_id": acct_id,
-                "ask_basis": "none",
-                "ask_basis_amount": 0,
-                "ask1": None,
-                "ask2": None,
-                "ask3": None,
-                "ask_label": "",
-            })
-            continue
 
         if seg in HPC_SEGMENTS:
             basis = hpc.get(acct_id, 0) or 0
@@ -129,29 +129,43 @@ def compute_ask_strings(
             basis = mrc.get(acct_id, 0) or 0
             basis_type = "MRC"
         elif seg in NEW_DONOR_SEGMENTS:
-            basis = mrc.get(acct_id, 0) or 0  # First gift = most recent for new donors
+            basis = mrc.get(acct_id, 0) or 0   # first gift ≈ most recent
             basis_type = "FirstGift"
+        elif seg in NO_ASK_SEGMENTS:
+            basis = 0
+            basis_type = "none"
         else:
             basis = mrc.get(acct_id, 0) or 0
             basis_type = "MRC"
 
-        if basis <= 0:
-            basis = floor  # Fallback to floor
+        # Compute the basis-driven ladder. If ANY tier of the raw ladder
+        # falls below floor, replace the whole ladder with the fallback
+        # — never re-floor tiers independently (was producing non-monotonic
+        # ladders like 15/20/15 for tiny basis values).
+        raw_asks = [basis * m for m in multipliers] if basis > 0 else [0.0, 0.0, 0.0]
+        if basis <= 0 or any(a < floor for a in raw_asks):
+            clamped_asks = list(fallback_ladder)
+        else:
+            rounded_asks = [_round_ask(a, params) for a in raw_asks]
+            clamped_asks = [min(a, rounded_ceiling) for a in rounded_asks]
+            # Deduplicate up the ladder if rounding collapsed adjacent tiers
+            if clamped_asks[0] == clamped_asks[1]:
+                inc = params["high_increment"] if clamped_asks[0] >= params["high_threshold"] else params["low_increment"]
+                clamped_asks[1] = min(clamped_asks[0] + inc, rounded_ceiling)
+            if clamped_asks[1] == clamped_asks[2]:
+                inc = params["high_increment"] if clamped_asks[1] >= params["high_threshold"] else params["low_increment"]
+                clamped_asks[2] = min(clamped_asks[1] + inc, rounded_ceiling)
 
-        # Compute ask amounts: [1x, 1.5x, 2x] with rounding UP
-        raw_asks = [basis * m for m in multipliers]
-        rounded_asks = [_round_ask(a, params) for a in raw_asks]
-        # Clamp: round DOWN to nearest increment at ceiling (don't produce non-round values)
-        rounded_ceiling = math.floor(ceiling / params["high_increment"]) * params["high_increment"]
-        clamped_asks = [_clamp(a, floor, rounded_ceiling) for a in rounded_asks]
-
-        # Deduplicate (if rounding/clamping causes same value) — use appropriate increment
-        if clamped_asks[0] == clamped_asks[1]:
-            inc = params["high_increment"] if clamped_asks[0] >= params["high_threshold"] else params["low_increment"]
-            clamped_asks[1] = min(clamped_asks[0] + inc, rounded_ceiling)
-        if clamped_asks[1] == clamped_asks[2]:
-            inc = params["high_increment"] if clamped_asks[1] >= params["high_threshold"] else params["low_increment"]
-            clamped_asks[2] = min(clamped_asks[1] + inc, rounded_ceiling)
+        # AskAmountLabel always sources from HPC ("Best Gift of $___").
+        # When HPC is null/0 (donor with no recorded high gift), fall back
+        # to the largest ask tier so the reply device never prints
+        # "Best Gift of $0.00" or blank.
+        hpc_value = hpc.get(acct_id, 0) or 0
+        if hpc_value > 0:
+            label_amount = float(hpc_value)
+        else:
+            label_amount = float(clamped_asks[2])
+        ask_label = f"Best Gift of ${label_amount:,.2f}"
 
         asks.append({
             "account_id": acct_id,
@@ -160,7 +174,7 @@ def compute_ask_strings(
             "ask1": clamped_asks[0],
             "ask2": clamped_asks[1],
             "ask3": clamped_asks[2],
-            "ask_label": f"Best Gift of ${basis:,.2f}",
+            "ask_label": ask_label,
         })
 
     df = pd.DataFrame(asks)

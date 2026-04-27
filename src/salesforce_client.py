@@ -47,7 +47,7 @@ def query_all(sf: Salesforce, soql: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 ACCOUNT_SOQL = """
-SELECT Id, Name, Constituent_Id__c,
+SELECT Id, Name, Constituent_Id__c, Account_CASESAFEID__c,
        First_Name__c, Last_Name__c, Special_Salutation__c,
        npo02__Formal_Greeting__c, npo02__Informal_Greeting__c,
        npo02__LastCloseDate__c, npo02__FirstCloseDate__c,

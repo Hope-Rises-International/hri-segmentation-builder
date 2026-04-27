@@ -33,6 +33,10 @@ PRINTER_COLUMNS = [
 # Scanline at position 3 — Aegis matches incoming gifts to the Matchback by
 # full ALM scanline, not DonorID alone. Without this column, attribution
 # silently fails for the entire campaign.
+# Account_CASESAFEID at the END — 18-char SF Account Id from
+# Account_CASESAFEID__c formula field. Distinct from DonorID
+# (Constituent_Id__c). Both go in Matchback so Aegis / merge-purge can
+# pick whichever identifier they prefer.
 MATCHBACK_COLUMNS = [
     "DonorID", "CampaignAppealCode", "Scanline", "InternalAppealCode",
     "SegmentCode", "SegmentName", "PackageCode", "TestFlag",
@@ -44,6 +48,7 @@ MATCHBACK_COLUMNS = [
     "CumulativeGiving", "LifecycleStage", "CAVersion",
     "CornerstoneFlag", "Email", "SustainerFlag",
     "GiftCount12Mo", "RFMScore", "Holdout", "ExclusionReason",
+    "Account_CASESAFEID",
 ]
 
 
@@ -167,9 +172,17 @@ def generate_output_files(
         all_codes.loc[qr_mask, "exclusion_reason"] = "quantity_reduction"
     all_codes["_is_excluded"] = all_codes["exclusion_reason"] != ""
 
-    # Merge account fields
+    # Merge account fields. Account_CASESAFEID__c was added 2026-04-27 —
+    # if the BQ cache hasn't been refreshed since the SOQL change, the
+    # column won't be there. Inject an empty Series in that case so the
+    # output stays well-formed; the next nightly cache refresh fills it.
+    if "Account_CASESAFEID__c" not in accts.columns:
+        accts = accts.copy()
+        accts["Account_CASESAFEID__c"] = ""
+        logger.warning("  Account_CASESAFEID__c missing from accounts cache — column will be blank until next sf-cache-extract")
     acct_fields = accts[[
         "npo02__Formal_Greeting__c", "npo02__Informal_Greeting__c",
+        "Account_CASESAFEID__c",
         "First_Name__c", "Last_Name__c",
         "BillingStreet", "BillingCity", "BillingState", "BillingPostalCode", "BillingCountry",
         "npo02__LastOppAmount__c", "npo02__LastCloseDate__c",
@@ -252,6 +265,7 @@ def generate_output_files(
     master["RFMScore"] = master["RFM_code"].fillna("")
     master["ExclusionReason"] = master["exclusion_reason"]
     master["ReplyCopyTier"] = master["ReplyCopyTier"].fillna("")
+    master["Account_CASESAFEID"] = master["Account_CASESAFEID__c"].fillna("").astype(str)
 
     logger.info(f"  Master DataFrame built: {len(master):,} rows in {time.time() - t0:.1f}s")
 
