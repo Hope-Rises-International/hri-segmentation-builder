@@ -30,8 +30,11 @@ PRINTER_COLUMNS = [
 ]
 
 # Matchback File columns (spec Section 10.2)
+# Scanline at position 3 — Aegis matches incoming gifts to the Matchback by
+# full ALM scanline, not DonorID alone. Without this column, attribution
+# silently fails for the entire campaign.
 MATCHBACK_COLUMNS = [
-    "DonorID", "CampaignAppealCode", "InternalAppealCode",
+    "DonorID", "CampaignAppealCode", "Scanline", "InternalAppealCode",
     "SegmentCode", "SegmentName", "PackageCode", "TestFlag",
     "Addressee", "Salutation", "FirstName", "LastName",
     "Address1", "Address2", "City", "State", "ZIP", "Country",
@@ -61,14 +64,6 @@ def _split_street(s):
     addr1 = parts[0].str.strip() if 0 in parts.columns else pd.Series("", index=s.index)
     addr2 = parts[1].str.strip() if 1 in parts.columns else pd.Series("", index=s.index)
     return addr1.fillna(""), addr2.fillna("")
-
-
-def _fix_salutation(sal, last):
-    """Vectorized salutation fix: append last name if salutation is single word."""
-    sal = sal.fillna("").astype(str)
-    last = last.fillna("").astype(str)
-    is_single_word = (sal != "") & (~sal.str.contains(' ')) & (last != "")
-    return sal.where(~is_single_word, sal + " " + last)
 
 
 def apply_constituent_id_filter(codes_df, accounts_df):
@@ -174,7 +169,7 @@ def generate_output_files(
 
     # Merge account fields
     acct_fields = accts[[
-        "npo02__Formal_Greeting__c", "Special_Salutation__c",
+        "npo02__Formal_Greeting__c", "npo02__Informal_Greeting__c",
         "First_Name__c", "Last_Name__c",
         "BillingStreet", "BillingCity", "BillingState", "BillingPostalCode", "BillingCountry",
         "npo02__LastOppAmount__c", "npo02__LastCloseDate__c",
@@ -208,10 +203,13 @@ def generate_output_files(
     master = master.merge(wf_cols, on="account_id", how="left")
 
     # --- Vectorized field transforms ---
+    # Addressee = envelope name ("Mr. and Mrs. John Smith"). Formal greeting.
+    # Salutation = letter opening ("Dear John,"). Informal greeting.
+    # No fallback when informal is blank — leave Salutation empty so the
+    # printer can apply their own default rather than us silently using
+    # the wrong field.
     master["Addressee"] = master["npo02__Formal_Greeting__c"].fillna("")
-    master["Salutation"] = _fix_salutation(
-        master["Special_Salutation__c"], master["Last_Name__c"]
-    )
+    master["Salutation"] = master["npo02__Informal_Greeting__c"].fillna("")
     master["FirstName"] = master["First_Name__c"].fillna("")
     master["LastName"] = master["Last_Name__c"].fillna("")
     master["Address1"], master["Address2"] = _split_street(master["BillingStreet"])
@@ -220,8 +218,15 @@ def generate_output_files(
     master["ZIP"] = _format_zip_series(master["BillingPostalCode"])
     master["Country"] = master["BillingCountry"].fillna("")
 
-    # Rename code columns
-    master["DonorID"] = master.get("donor_id_9", "")
+    # Rename code columns. DonorID must stay 9-char string with leading
+    # zeros — both numeric IDs (zero-pad to 9) and S-prefixed IDs (already
+    # 9 chars) flow through this same column. Pad defensively here to
+    # survive any prior coercion to int.
+    raw_donor = master.get("donor_id_9", pd.Series("", index=master.index))
+    raw_donor = raw_donor.fillna("").astype(str).str.strip()
+    is_s_prefixed = raw_donor.str.startswith("S")
+    padded_numeric = raw_donor.str.zfill(9).str[:9]
+    master["DonorID"] = padded_numeric.where(~is_s_prefixed, raw_donor)
     master["CampaignAppealCode"] = master.get("appeal_code_9", "")
     master["Scanline"] = master.get("scanline", "")
     master["PackageCode"] = master.get("package_code", "")

@@ -4,7 +4,18 @@ Two formats:
 - 9-character: TYYMCPSS0 — goes to printer/cager via scanline
 - 15-character: [Program][FY][Campaign][Segment][Package][Test] — internal only
 
-Scanline: 9-digit zero-padded Donor ID + 9-char appeal code
+ALM Scanline (21 chars, two literal spaces):
+    "<DonorID:9> <CampaignAppealCode:9> <CheckDigit:1>"
+
+Check digit algorithm — operates on the 18-char DonorID+AppealCode
+concatenation (no spaces, no CD yet):
+  1. Treat the 18 characters as 18 individual values.
+  2. Replace alpha chars per CHECK_DIGIT_CONVERSION; numerics keep value.
+  3. Assign alternating weights 1,2,1,2,... (1-indexed positions).
+  4. Multiply each value by its weight (18 products).
+  5. For each product: if > 9, subtract 9; else keep.
+  6. Sum the 18 step-5 values.
+  7. CD = (10 - (sum mod 10)) mod 10
 """
 
 from __future__ import annotations
@@ -16,6 +27,49 @@ import numpy as np
 from config import SEGMENT_CODES, fy_label_for_date, get_package_code
 
 logger = logging.getLogger(__name__)
+
+# ALM check-digit conversion table — alpha → numeric.
+# Numerics keep their integer value; any other char is an error.
+CHECK_DIGIT_CONVERSION = {
+    "A": 1, "B": 2, "C": 3, "D": 4, "E": 5, "F": 6, "G": 7, "H": 8, "I": 9,
+    "J": 1, "K": 2, "L": 3, "M": 4, "N": 5, "O": 6, "P": 7, "Q": 8, "R": 9,
+    "S": 2, "T": 3, "U": 4, "V": 5, "W": 6, "X": 7, "Y": 8, "Z": 9,
+}
+
+
+def compute_check_digit(scanline_18: str) -> int:
+    """Compute the ALM check digit for an 18-char DonorID+AppealCode string.
+
+    See module docstring for the 7-step spec. Caller must pass exactly 18
+    alphanumeric characters; any other length is a bug, raise.
+    """
+    if len(scanline_18) != 18:
+        raise ValueError(f"check digit input must be 18 chars, got {len(scanline_18)}: {scanline_18!r}")
+    total = 0
+    for i, ch in enumerate(scanline_18):
+        if ch.isdigit():
+            value = int(ch)
+        else:
+            up = ch.upper()
+            if up not in CHECK_DIGIT_CONVERSION:
+                raise ValueError(f"unsupported check-digit char {ch!r} at pos {i+1} in {scanline_18!r}")
+            value = CHECK_DIGIT_CONVERSION[up]
+        weight = 1 if (i % 2 == 0) else 2   # positions 1,3,5,... get weight 1
+        product = value * weight
+        if product > 9:
+            product -= 9
+        total += product
+    return (10 - (total % 10)) % 10
+
+
+def format_scanline(donor_id_9: str, appeal_code_9: str) -> str:
+    """Return the full 21-char ALM scanline:
+        '<DonorID> <CampaignAppealCode> <CheckDigit>'
+    """
+    s18 = f"{donor_id_9}{appeal_code_9}"
+    cd = compute_check_digit(s18)
+    return f"{donor_id_9} {appeal_code_9} {cd}"
+
 
 # Program code from segment group prefix (spec Section 9.1 position 1)
 PROGRAM_BY_PREFIX = {
@@ -105,9 +159,10 @@ def generate_appeal_codes(
         else:
             donor_id_9 = "000000000"
 
-        # Scanline: donor ID + 9-char appeal code
-        # Flag records with missing Constituent_Id (these will generate duplicate scanlines)
-        scanline = donor_id_9 + appeal_9
+        # Scanline: full 21-char ALM format with check digit.
+        # Flag records with missing Constituent_Id (these will collide on
+        # the scanline-9 prefix even though the CD/appeal differ).
+        scanline = format_scanline(donor_id_9, appeal_9)
         missing_id = donor_id_9 == "000000000"
 
         # CA version flag
@@ -197,12 +252,12 @@ def validate_appeal_codes(codes_df: pd.DataFrame) -> pd.DataFrame:
         "Detail": f"{len(valid):,} valid scanlines, {scanline_dupes} dupes, {int(missing_ids)} missing Constituent_Id",
     })
 
-    # Scanline format (18 chars: 9 donor + 9 appeal)
-    bad_length = (codes_df["scanline"].str.len() != 18).sum()
+    # Scanline format: 21 chars total — '<DonorID:9> <AppealCode:9> <CD:1>'
+    bad_length = (codes_df["scanline"].str.len() != 21).sum()
     rows.append({
-        "Check": "Scanline Length (18 chars)",
+        "Check": "Scanline Length (21 chars, ALM format)",
         "Status": "PASS" if bad_length == 0 else "FAIL",
-        "Detail": f"{bad_length} scanlines with wrong length" if bad_length else "All 18 chars",
+        "Detail": f"{bad_length} scanlines with wrong length" if bad_length else "All 21 chars",
     })
 
     # 15-char format (exactly 15 chars)
