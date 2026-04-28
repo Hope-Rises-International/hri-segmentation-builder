@@ -120,13 +120,19 @@ def apply_tier2_suppression(
         _suppress_tier2("No_Mail_Code__c", "No Mail Code")
 
     # --- v3.3: Major Donor In-House (renamed from TLC_Donor_Segmentation__c). ---
-    # Suppress when the field equals "In House". Default ON. Operator
+    # Suppress when the field equals "Major - In House" — that's the
+    # actual live picklist value (verified in BQ accounts_raw on 2026-04-28:
+    # 166 records). SPEC §5.5.1 anticipates a future cleanup to drop the
+    # "Major - " prefix; we accept either form. Default ON. Operator
     # flips OFF only for an N-prefix in-house-only mailing — handled
     # upstream by validate_campaign_selection.
     if toggles.get("major_donor_in_house", True):
-        inhouse_field = accts.get("Major_Donor_In_House__c",
-                                  pd.Series("", index=accts.index)).fillna("").astype(str)
-        flagged_ids = set(inhouse_field[inhouse_field == "In House"].index) & assigned_ids
+        inhouse_field = (
+            accts.get("Major_Donor_In_House__c", pd.Series("", index=accts.index))
+            .fillna("").astype(str).str.strip()
+        )
+        inhouse_match = inhouse_field.isin({"Major - In House", "In House"})
+        flagged_ids = set(inhouse_field[inhouse_match].index) & assigned_ids
         if flagged_ids:
             mask = result["account_id"].isin(flagged_ids) & assigned_mask
             result.loc[mask, "suppression_reason"] = "Tier2: Major Donor In-House"
