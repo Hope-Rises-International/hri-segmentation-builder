@@ -90,8 +90,21 @@ SECOND_YEAR_MIN_DAYS = 365
 SECOND_YEAR_MAX_DAYS = 730
 
 # --- Giving Tier Thresholds (spec Section 5.4) ---
-MID_LEVEL_MIN = 1000.0
-MID_LEVEL_MAX = 4999.99
+# v3.3 (2026-04-28): Mid-Level redefined to a $750 floor with no upper
+# cap, and the basis switched from lifetime cumulative
+# (npo02__TotalOppAmount__c) to 24-month cumulative
+# (Total_Gifts_Last_365_Days__c + Total_Gifts_730_365_Days_Ago__c). See
+# SPEC §5.4. The MAX constant is kept as math.inf so existing callers
+# that read it still work without changes; remove once nobody references it.
+import math
+MID_LEVEL_MIN = 750.0
+MID_LEVEL_MAX = math.inf       # v3.3: no upper cap
+# v3.3: Mid-Level Prospect cohort eliminated. Sub-$750 active donors
+# route to Active Housefile / Lapsed RFM positions instead. The MP01
+# code is preserved in SEGMENT_CODES below as a deprecated entry so
+# historical Matchback files / Salesforce Campaign_Segment__c records
+# referencing it continue to resolve. Constants kept for the same
+# reason — easy reinstatement if Erica/Jessica need MP01 back.
 MID_LEVEL_PROSPECT_MIN = 500.0
 MID_LEVEL_PROSPECT_MAX = 999.99
 MID_LEVEL_ACTIVE_MONTHS = 24  # gave in last 24 months
@@ -100,7 +113,7 @@ DM_GIFT_HIGH_THRESHOLD = 500.0  # no single DM gift $500+
 # --- Segment Code Registry (spec Section 9.3) ---
 SEGMENT_CODES = {
     "MJ01": "Major Gift Custom Package",
-    "ML01": "Mid-Level ($1,000–$4,999.99)",
+    "ML01": "Mid-Level (24-mo cumulative ≥ $750, no upper cap)",
     "SU01": "Sustainer (Miracle Partner)",
     "CS01": "Cornerstone Partner",
     "ND01": "New Donor",
@@ -110,7 +123,10 @@ SEGMENT_CODES = {
     "AH04": "Active 7–12mo $50+ avg",
     "AH05": "Active 7–12mo $25–$49.99 avg",
     "AH06": "Active 7–12mo under $25 avg",
-    "MP01": "Mid-Level Prospect ($500–$999.99)",
+    # v3.3: deprecated. Mid-Level Prospect cohort eliminated; sub-$750
+    # active donors route to Active Housefile / Lapsed RFM. Code kept
+    # so historical Matchback/Campaign_Segment__c rows still resolve.
+    "MP01": "Mid-Level Prospect (DEPRECATED v3.3 — code kept for historical files only)",
     "LR01": "Lapsed Recent 13–18mo",
     "LR02": "Lapsed Recent 19–24mo",
     "DL01": "Deep Lapsed 25–36mo $100+ cum",
@@ -164,14 +180,19 @@ def get_package_code(segment_code, package_overrides=None):
 
 
 # --- Default Waterfall Toggle States (spec Section 3, Step 2) ---
+# v3.3 (2026-04-28):
+# - mid_level_prospect: removed (cohort eliminated, see SPEC §5.4 v3.3).
+# - new_donor: removed from waterfall toggles. Promoted to Tier 1.5
+#   pre-emption that runs above the waterfall (SPEC §6.2.1, v3.3).
+#   The pre-emption is unconditional in standard appeals; the welcome
+#   series itself runs as a separate workflow with all other GROUP
+#   toggles OFF.
 DEFAULT_TOGGLES = {
     "major_gift":       True,
     "mid_level":        True,
     "sustainer":        False,   # Default OFF — include for year-end/emergency
     "cornerstone":      True,
-    "new_donor":        False,   # Default OFF — welcome window
     "active_housefile": True,
-    "mid_level_prospect": True,
     "lapsed":           True,
     "deep_lapsed":      True,
 }
@@ -185,33 +206,44 @@ def fy_label_for_date(d: date) -> str:
         return f"FY{d.year % 100:02d}"
 
 
-# --- Cohort → Required Campaign Prefix (Bill 2026-04-28, Item C) ---
+# --- Cohort → Required Campaign Prefix (v3.3, 2026-04-28) ---
 # Each segment code maps to the campaign-prefix(es) it accepts. Used for
 # multi-campaign runs to route donors to the correct campaign code.
 #
-#   "A"  — General housefile, Cornerstone, Sustainer, New Donor folds under A
-#   "M"  — Mid-Level / Mid-Level Prospect; never A or J
-#   "MJ" — Major Gift; M default, J wins if a J-prefix campaign is selected
+#   "A"  — General housefile, Cornerstone, Sustainer, CBNC
+#   "M"  — Mid-Level (ML01) and Major Gift (MJ01)
+#   "N"  — In-house Major Donor cohort, only when major_donor_in_house
+#          Tier 2 toggle is OFF (rare in-house-only mailing)
+#
+# Removed in v3.3:
+#   - "J" prefix entries (J was a misinterpretation per Bill 2026-04-28
+#     — there is no J campaign prefix at HRI).
+#   - "MP01" routing (cohort eliminated; code retained as deprecated).
+#   - "ND01" routing (New Donor moved to Tier 1.5 pre-emption — never
+#     reaches the waterfall and never gets an appeal code under the
+#     standard flow. The welcome series itself runs as a separate
+#     workflow with its own appeal code.)
 #
 # The validator uses this list at run-time: for every segment present in
 # the assigned universe, at least one selected campaign must have the
-# required prefix. No A→other auto-fallback.
+# required prefix. No auto-fallback.
 COHORT_PREFIX_RULES = {
-    # Housefile / Cornerstone / Sustainer / New Donor / CBNC — A only
+    # Housefile / Cornerstone / Sustainer / CBNC — A only
     "AH01": "A", "AH02": "A", "AH03": "A",
     "AH04": "A", "AH05": "A", "AH06": "A",
     "LR01": "A", "LR02": "A",
     "DL01": "A", "DL02": "A", "DL03": "A", "DL04": "A",
     "CB01": "A",
-    "ND01": "A",
     "SU01": "A",
     "CS01": "A", "CS02": "A",
-    # Mid-Level / Mid-Level Prospect — M only
+    # Mid-Level — M only
     "ML01": "M",
-    "MP01": "M",
-    # Major Gift — M default; J wins if a J-prefix campaign is in the
-    # selection. Special-cased in the prefix resolver below.
-    "MJ01": "MJ",
+    # Major Gift — M only (J removed v3.3)
+    "MJ01": "M",
+    # MP01 / ND01: deprecated / pre-empted; intentionally absent from
+    # the routing table. If an upstream change ever assigns to one of
+    # these codes again, the resolver returns None and the validator
+    # surfaces a clear error rather than silently routing.
 }
 
 # Toggle → required prefix for UI / pre-run validation. Keyed by toggle
@@ -219,16 +251,21 @@ COHORT_PREFIX_RULES = {
 # from operator toggle state, without yet knowing which segment codes
 # will end up populated). Stays in sync with COHORT_PREFIX_RULES.
 TOGGLE_PREFIX_RULES = {
-    "cornerstone":        "A",
-    "sustainer":          "A",
-    "new_donor":          "A",
-    "active_housefile":   "A",
-    "lapsed":             "A",
-    "deep_lapsed":        "A",
-    "mid_level":          "M",
-    "mid_level_prospect": "M",
-    "major_gift":         "MJ",   # M default, J wins if a J campaign is selected
+    "cornerstone":      "A",
+    "sustainer":        "A",
+    "active_housefile": "A",
+    "lapsed":           "A",
+    "deep_lapsed":      "A",
+    "mid_level":        "M",
+    "major_gift":       "M",   # v3.3: M only. J removed.
 }
+
+# v3.3: when the Major_Donor_In_House Tier 2 toggle is OFF, the
+# in-house cohort is mailed via an N-prefix campaign. The validator
+# uses this map to require an N-prefix campaign in the selection
+# whenever the operator turns the in-house suppression OFF.
+INHOUSE_TOGGLE_KEY = "major_donor_in_house"
+INHOUSE_PREFIX = "N"
 
 
 def resolve_campaign_for_segment(segment_code, selected_campaigns):
@@ -238,8 +275,7 @@ def resolve_campaign_for_segment(segment_code, selected_campaigns):
         segment_code: HRI segment (AH01, ML01, MJ01, ...).
         selected_campaigns: list of dicts with at minimum
             `appeal_code` (9-char). The first character is the prefix
-            (A, M, J, ...). Order in the list does not matter — Major
-            Gift always prefers J over M when both are present.
+            (A, M, N, ...). Order does not matter.
 
     Returns:
         The matching campaign dict, or None if none match. Caller is
@@ -262,9 +298,6 @@ def resolve_campaign_for_segment(segment_code, selected_campaigns):
     if required is None:
         return None
     by_prefix = {c.get("appeal_code", "")[:1]: c for c in selected_campaigns}
-    if required == "MJ":
-        # Major Gift: prefer J, fall back to M.
-        return by_prefix.get("J") or by_prefix.get("M")
     return by_prefix.get(required)
 
 
@@ -277,6 +310,10 @@ def validate_campaign_selection(toggles, selected_campaigns):
     Errors are operator-facing — the message names the toggle and the
     missing prefix so the operator knows whether to add a campaign or
     flip the toggle off.
+
+    v3.3: N-prefix requirement added when major_donor_in_house Tier 2
+    toggle is OFF. Operator running an in-house-only mailing must
+    include an N-prefix campaign for the in-house cohort to route to.
     """
     errors = []
     if not selected_campaigns:
@@ -284,29 +321,32 @@ def validate_campaign_selection(toggles, selected_campaigns):
         return errors
     selected_prefixes = {c.get("appeal_code", "")[:1] for c in selected_campaigns}
     label_for = {
-        "cornerstone":        "Cornerstone",
-        "sustainer":          "Sustainer",
-        "new_donor":          "New Donor",
-        "active_housefile":   "Active Housefile",
-        "lapsed":             "Lapsed",
-        "deep_lapsed":        "Deep Lapsed",
-        "mid_level":          "Mid-Level",
-        "mid_level_prospect": "Mid-Level Prospect",
-        "major_gift":         "Major Gift",
+        "cornerstone":      "Cornerstone",
+        "sustainer":        "Sustainer",
+        "active_housefile": "Active Housefile",
+        "lapsed":           "Lapsed",
+        "deep_lapsed":      "Deep Lapsed",
+        "mid_level":        "Mid-Level",
+        "major_gift":       "Major Gift",
     }
     for tk, required in TOGGLE_PREFIX_RULES.items():
         if not toggles.get(tk, DEFAULT_TOGGLES.get(tk, False)):
             continue
-        if required == "MJ":
-            ok = ("M" in selected_prefixes) or ("J" in selected_prefixes)
-            label = "M or J"
-        else:
-            ok = required in selected_prefixes
-            label = required
+        ok = required in selected_prefixes
         if not ok:
             errors.append(
-                f"{label_for[tk]} toggle is ON but no {label}-prefix campaign "
-                f"is in your selection. Add a {label} campaign or turn "
+                f"{label_for[tk]} toggle is ON but no {required}-prefix campaign "
+                f"is in your selection. Add a {required} campaign or turn "
                 f"{label_for[tk]} OFF."
             )
+    # v3.3: in-house override requires an N-prefix campaign in the run.
+    # Default ON suppresses in-house donors; flipping OFF means the
+    # operator is mailing them, which routes via N.
+    inhouse_on = toggles.get(INHOUSE_TOGGLE_KEY, True)
+    if not inhouse_on and INHOUSE_PREFIX not in selected_prefixes:
+        errors.append(
+            "Major Donor In-House suppression is OFF (in-house mailing) "
+            f"but no {INHOUSE_PREFIX}-prefix campaign is in your selection. "
+            f"Add an {INHOUSE_PREFIX} campaign or turn the suppression back ON."
+        )
     return errors

@@ -48,6 +48,7 @@ def query_all(sf: Salesforce, soql: str) -> list[dict]:
 
 ACCOUNT_SOQL = """
 SELECT Id, Name, Constituent_Id__c, Account_CASESAFEID__c,
+       Type, RecordType.Name,
        First_Name__c, Last_Name__c, Special_Salutation__c,
        npo02__Formal_Greeting__c, npo02__Informal_Greeting__c,
        npo02__LastCloseDate__c, npo02__FirstCloseDate__c,
@@ -64,6 +65,7 @@ SELECT Id, Name, Constituent_Id__c, Account_CASESAFEID__c,
        Number_of_Gifts_4_Fiscal_Years_Ago__c,
        Number_of_Gifts_5_Fiscal_Years_Ago__c,
        Cornerstone_Partner__c, Miracle_Partner__c,
+       Major_Donor_In_House__c,
        npsp__Sustainer__c,
        Staff_Manager__c, Lifecycle_Stage__c,
        BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,
@@ -103,7 +105,16 @@ def fetch_accounts(sf: Salesforce) -> pd.DataFrame:
     records = query_all(sf, ACCOUNT_SOQL)
     elapsed = time.time() - start
     logger.info(f"  Fetched {len(records):,} accounts in {elapsed:.1f}s")
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    # Flatten nested RecordType dict to a scalar column. v3.3 Tier 1
+    # suppression keys off RecordType.Name (ALM organization types);
+    # downstream waterfall code reads it as `RecordTypeName`.
+    if "RecordType" in df.columns:
+        df["RecordTypeName"] = df["RecordType"].apply(
+            lambda x: x.get("Name") if isinstance(x, dict) else None
+        )
+        df.drop(columns=["RecordType"], inplace=True)
+    return df
 
 
 def fetch_opportunities(sf: Salesforce) -> pd.DataFrame:

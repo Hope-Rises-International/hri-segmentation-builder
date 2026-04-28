@@ -15,20 +15,32 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Default suppression toggle states per spec Section 6.2.2
+# Default suppression toggle states per spec Section 6.2.2.
+# v3.3 (2026-04-28):
+#   - Tier 3 deleted entirely.
+#   - No_Mail_Code__c moved from Tier 1 → Tier 2 always-on toggle.
+#   - Major_Donor_In_House__c added as Tier 2 always-on toggle (renamed
+#     from TLC_Donor_Segmentation__c). Default ON suppresses; flip OFF
+#     for in-house-only mailing (requires N-prefix campaign).
+#   - newsletter_only and no_name_sharing dropped:
+#     * newsletter_only is replaced by Newsletters_Only__c handling
+#       (kept under the same toggle key for back-compat — Newsletter_and_
+#       _Prospectus_Only__c is consolidated upstream by Bekah).
+#     * no_name_sharing was acquisition-co-op only, never DM.
 DEFAULT_SUPPRESSION_TOGGLES = {
     # Tier 2 donor-level
-    "newsletter_only": True,       # Suppress from appeals, include in newsletters
-    "match_only": True,            # Suppress from standard, include in match
-    "no_name_sharing": True,       # Suppress from list exchange
-    "xmas_catalog_cap": True,      # 1 mailing/FY cap
-    "xmas_easter_cap": True,       # 2 mailings/FY cap
+    "no_mail_code":          True,    # v3.3: was Tier 1; toggleable for rare cases
+    "major_donor_in_house":  True,    # v3.3: suppress flagged in-house donors
+    "newsletter_only":       True,    # Suppress from appeals; include in newsletters
+    "match_only":            True,    # Suppress from standard, include in match
+    "xmas_catalog_cap":      True,    # 1 mailing/FY cap
+    "xmas_easter_cap":       True,    # 2 mailings/FY cap
     # Segment-level
-    "recent_gift_window": False,   # OFF for first 2 campaigns (spec Section 6.2.2)
-    "break_even_floor": True,      # Always active
-    "response_rate_floor": True,   # Always active
-    "frequency_cap": False,        # OFF for first 2 campaigns
-    "holdout": True,               # 5% holdout ON
+    "recent_gift_window":    False,   # spec'd, NOT BUILT (v3.3 §6.2.2). Inert.
+    "break_even_floor":      True,    # Always active
+    "response_rate_floor":   True,    # Always active
+    "frequency_cap":         False,   # OFF for first 2 campaigns; field unpopulated
+    "holdout":               True,    # 5% holdout ON
 }
 
 DEFAULT_SUPPRESSION_PARAMS = {
@@ -101,10 +113,35 @@ def apply_tier2_suppression(
 
     logger.info(f"Applying Tier 2 suppression (campaign_type={campaign_type})...")
 
-    # --- Newsletter and Prospectus Only / Newsletters Only ---
-    # Suppress from appeals. Include in newsletter campaigns.
+    # --- v3.3: No Mail Code (was Tier 1). ---
+    # Default ON. Toggleable for rare authorized cases (events,
+    # cornerstone exceptions). Operator must explicitly flip OFF.
+    if toggles.get("no_mail_code", True):
+        _suppress_tier2("No_Mail_Code__c", "No Mail Code")
+
+    # --- v3.3: Major Donor In-House (renamed from TLC_Donor_Segmentation__c). ---
+    # Suppress when the field equals "In House". Default ON. Operator
+    # flips OFF only for an N-prefix in-house-only mailing — handled
+    # upstream by validate_campaign_selection.
+    if toggles.get("major_donor_in_house", True):
+        inhouse_field = accts.get("Major_Donor_In_House__c",
+                                  pd.Series("", index=accts.index)).fillna("").astype(str)
+        flagged_ids = set(inhouse_field[inhouse_field == "In House"].index) & assigned_ids
+        if flagged_ids:
+            mask = result["account_id"].isin(flagged_ids) & assigned_mask
+            result.loc[mask, "suppression_reason"] = "Tier2: Major Donor In-House"
+            result.loc[mask, "segment_code"] = ""
+            result.loc[mask, "segment_name"] = ""
+            for aid in flagged_ids:
+                suppression_log.append((aid, "Major Donor In-House", 2))
+            count = mask.sum()
+            logger.info(f"  Tier 2 [Major Donor In-House]: {count:,} suppressed")
+
+    # --- Newsletters Only ---
+    # v3.3: Newsletter_and_Prospectus_Only__c removed. Bekah is
+    # consolidating that picklist into Newsletters_Only__c — once
+    # consolidation lands, this is the single source of truth.
     if toggles.get("newsletter_only", True) and campaign_type != "Newsletter":
-        _suppress_tier2("Newsletter_and_Prospectus_Only__c", "Newsletter/Prospectus Only")
         _suppress_tier2("Newsletters_Only__c", "Newsletters Only")
 
     # --- Match Only ---
@@ -112,14 +149,8 @@ def apply_tier2_suppression(
     if toggles.get("match_only", True) and campaign_type != "Match":
         _suppress_tier2("Match_Only__c", "Match Only")
 
-    # --- No Name Sharing ---
-    # Suppress from list exchange. For now just flag — affects acquisition co-op, not DM.
-    # Logged but not suppressed from the mailing itself.
-    if toggles.get("no_name_sharing", True):
-        no_share = accts.get("No_Name_Sharing__c", pd.Series(False, index=accts.index))
-        no_share_count = (no_share == True).sum()
-        if no_share_count > 0:
-            logger.info(f"  Tier 2 [No Name Sharing]: {no_share_count:,} flagged (list exchange only, not suppressed from mailing)")
+    # v3.3: No_Name_Sharing__c removed. It's an acquisition-co-op flag,
+    # not a DM suppression — Bekah confirmed.
 
     # --- Frequency caps (Xmas Catalog 1/FY, Xmas/Easter 2/FY) ---
     # These require mailing history tracking from Campaign_Segment__c.

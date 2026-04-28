@@ -1,7 +1,7 @@
 # HRI Segmentation Builder — Full Specification
 
 **Hope Rises International**
-**Version 3.2 — April 13, 2026**
+**Version 3.****3**** — April 28, 2026**
 **FIS Component: Segmentation Engine + Segment Data Loader + Campaign Intelligence Workbook**
 
 ---
@@ -9,11 +9,12 @@
 ### Revision History
 
 | Version | Date | Changes |
-|---------|------|---------|
+| --- | --- | --- |
 | 2.0 | April 10, 2026 | Initial full spec with MIC integration, three-pass projection, appeal code architecture |
 | 3.0 | April 10, 2026 | External review triage (ChatGPT + Gemini). Appeal code diagram fix. Intra-segment tie-breaker. Ask rounding direction. Run idempotency model. Draft-tab review pattern. Suppression audit log → Google Drive. Suppression rules as toggles. ZIP validation revised. Retention policy. Sheets-as-database migration flag. |
 | 3.1 | April 10, 2026 | Segment group toggle panel (systematic include/exclude for all waterfall positions). Cornerstone flag read-only (scoring model deferred — flag maintained externally via triage query). Waterfall positions toggle-gated. |
 | 3.2 | April 13–14, 2026 | Object model correction: Contact → Account throughout. "Source code" → "appeal code" terminology. Scanline architecture: 9-digit donor ID + 9-char appeal code, confirmed against physical mail piece. Two-file output: Printer File (agency, 9-char) and Internal Matchback File (HRI, 15-char). GCS → Google Drive. Three-tier donor-level suppression system (Bekah reviewed). Cornerstone field → `Cornerstone_Partner__c`. MIC confirmed live. Baseline campaign selector for historical performance projection (Section 7.2). Pipeline write recovery with sequential write order, per-target success/fail flags, and retry logic (Section 3). Phase 1 reframed as explicit diagnostic gate for open items 1–3. Single-operator constraint documented. `campaign_type` field added to MIC. Six open items resolved (#5, #6, #8, #11, #12, #13). |
+| 3.3 | April 28, 2026 | Bekah/Bill/Erica/Jessica review. Mid-Level redefined: 24-month cumulative (not lifetime), $750 floor, no upper cap. Mid-Level Prospect (MP01) eliminated — sub-$750 routes to active housefile / lapsed RFM. Account.Type (DAF, Government) and Account.RecordType (3 ALM org types) added to Tier 1 hard suppression. SF field rename: `TLC_Donor_Segmentation__c` → `Major_Donor_In_House__c`; values reduced to blank vs "In House"; routed as Tier 2 always-on suppression. Tier 1 / Tier 2 / Tier 3 reorganized: NCOA Deceased / Not Deliverable / Primary Contact Deceased removed; No Mail Code moved to Tier 2 always-on toggle; No Name Sharing / Address Unknown / Newsletter and Prospectus Only removed from Tier 2; X1/X2 Christmas mailing flags promoted from Tier 3 to Tier 2; Tier 3 deleted entirely. New Donor Welcome promoted from waterfall GROUP_EXCLUDE to Tier 1.5 hard pre-emption. Cohort prefix routing: J-prefix removed (was misinterpreted), N-prefix added for in-house Major Donor mailings. Recent-gift window clarified as spec'd-but-not-built pending Faircom guidance. Miracle Partner vs Cornerstone overlap: Miracle Partner wins (already correct in code; documented explicitly). |
 
 ---
 
@@ -32,7 +33,7 @@ The Segmentation Builder sits between planning and measurement. It pulls donor d
 ### Users
 
 | Name | Role | Interaction |
-|------|------|-------------|
+| --- | --- | --- |
 | Bill Simmons | CEO / system architect | Configures default segment rules in MIC Segment Rules tab, reviews projections, approves mailing plans |
 | Jessica Allen | Campaigns / direct response | Primary operator — selects campaign from MIC, runs pulls, reviews projections, approves segment inclusion, downloads output, transmits to agency, enters cost actuals post-mailing |
 | Bekah Schwanbeck | Salesforce / data ops | Validates source data, troubleshoots field-level issues |
@@ -85,15 +86,21 @@ Cloud Run service + Apps Script web app (hybrid). Same pattern as Campaign Score
 
 ### 2.2 The Campaign Intelligence Workbook (MIC)
 
-The existing MIC Google Sheet becomes the Campaign Intelligence Workbook — the single source of truth where planning, segmentation, and measurement converge. Five tabs:
+The existing MIC Google Sheet becomes the Campaign Intelligence Workbook — the single source of truth where planning, segmentation, and measurement converge. Seven tabs (verified in MIC 2026-04-27):
 
 | Tab | Purpose | Written By | Read By |
-|-----|---------|-----------|---------|
-| **Campaign Calendar** | One row per campaign touch. Budget plan (qty, cost, projected revenue) + actuals (actual qty, cost, revenue, response rate, avg gift, etc.). This is the existing flattened MIC data. | Jessica (budget plan), Campaign Scorecard pipeline (revenue/response actuals), Jessica (cost actuals post-mailing) | Segmentation Builder (reads budget target), Campaign Scorecard (reads campaign metadata), Budget Summary (formula references) |
+| --- | --- | --- | --- |
+| **mic\_flattened.csv** | Campaign Calendar. One row per campaign touch. FY / year / month / mail date / donor type / program / campaign type / F/U flag / appeal code / lane / qty / cost / projected revenue + actuals. Tab name inherited from the original CSV import; functionally this is the Campaign Calendar. | Jessica (budget plan), Campaign Scorecard pipeline (revenue/response actuals), Jessica (cost actuals post-mailing) | Segmentation Builder (reads budget target), Campaign Scorecard (reads campaign metadata), Budget Summary (formula references) |
 | **Draft** | Working projection for the active campaign pull. One row per segment. Auto-populated by the Segmentation Builder when a projection runs. Jessica reviews segment quantities, economics, inclusion/exclusion, and expansion levers here. Overwritten on each new projection run. Only one campaign's draft is active at a time. | Segmentation Builder (auto-populated) | Jessica (review and approve) |
 | **Segment Detail** | Finalized segment records. One row per segment per approved campaign. Written when Jessica approves a projection — the Draft tab contents are copied to Segment Detail as permanent record. | Segmentation Builder (on approval) | Campaign Scorecard (reads segment-level plan for variance analysis), Campaign Calendar (link_to_segments column references) |
-| **Budget Summary** | FY-level rollup by lane and channel. Budget vs. actual with variance. All formula-driven from Campaign Calendar. | Formulas (no manual entry) | Bill (review) |
-| **Segment Rules** | Default segment definitions, waterfall hierarchy, suppression parameters (with toggle flags), appeal code registry, ask string defaults. | Bill (configures), Jessica (reviews) | Segmentation Builder (reads as configuration source at runtime) |
+| **Budget Summary** | FY-level rollup by lane and channel. Budget vs. actual with variance. All formula-driven from `mic_flattened.csv`. | Formulas (no manual entry) | Bill (review) |
+| **Segment Actuals** | Segment-level actuals from Campaign Scorecard. Closes the segment-level economics loop — written by Scorecard pipeline, read by Segmentation Builder for Historical Baseline. | Campaign Scorecard pipeline | Segmentation Builder (Historical Baseline lookup) |
+| **Universe** | Snapshot of the eligible donor universe for the active campaign pull (post-Tier-1 suppression, post-toggle-exclusion). Used by the scenario editor for browser-side what-if iteration without re-querying SF/BQ. | Segmentation Builder (auto-populated on Refresh Universe) | Apps Script web app (scenario editor reads this) |
+| **Historical Baseline** | Multi-campaign weighted-average performance per segment by campaign type (Shipping, Easter, Year End, etc.). Refreshed nightly. Drives the Draft tab's projected economics. | Segmentation Builder nightly job (reads `sf_cache.historical_baseline` BQ table → writes Sheet) | Segmentation Builder (Draft projection lookup) |
+
+**Segment rules / configuration:** the prior spec named a "Segment Rules" tab here for waterfall hierarchy, toggle defaults, ask multipliers/floors/ceiling, package codes, etc. That tab was never built — those rules currently live in `src/config.py::DEFAULT_TOGGLES` and `src/config.py` constants in the build repo. To change a rule today, edit config and redeploy. Future enhancement: lift rules into a sheet tab so Jessica/Bill can edit without redeploy. Not in current scope.
+
+**Operator-facing documentation lives in the Apps Script web app UI, not in MIC tabs.** See §17 for the in-UI Reference and Buttons tabs that ship with the segmentation builder.
 
 > **Future architecture consideration:** The MIC Google Sheet functions as a lightweight database for campaign planning, segment detail, and rules configuration. At current HRI scale (~20 campaigns/year, single operator), this is adequate. If scale or concurrency requirements change, evaluate migration to Cloud SQL or BigQuery with the Sheet as a connected view layer. This migration can be executed independently of the Segmentation Builder — the interface contract (read campaign targets, write segment detail) remains the same regardless of backend. Flag for discussion after first full year of operation.
 
@@ -155,7 +162,9 @@ Campaign Scorecard Pipeline (existing, deployed)
 
 ### 2.5 GCP Project
 
-`gmail-agent-489116` (primary project). Service account: `hri-automation@gmail-agent-489116.iam.gserviceaccount.com`.
+`hri-receipt-automation` (primary project). Service account: `hri-sfdc-sync@hri-receipt-automation.iam.gserviceaccount.com`. Same project and SA as Campaign Scorecard, Donor File Health, and all SF-connected services. SF secrets already in this project's Secret Manager.
+
+> **Correction (2026-04-17):** Spec originally referenced `gmail-agent-489116` — that project is isolated for Gmail Agent only (OAuth, not ADC). Segmentation Builder uses ADC with SA impersonation and belongs in `hri-receipt-automation`.
 
 **Retention policy:** Google Drive-archived output files and suppression audit logs are retained for 3 fiscal years, then purged. Files can be regenerated from Salesforce source data if needed beyond the retention window.
 
@@ -200,14 +209,13 @@ The baseline field in the MIC Campaign Calendar stores the selected appeal code(
 The campaign opens to a **segment group toggle panel** showing which waterfall positions are active for this mailing. Every major waterfall position has an include/exclude switch. This is how Jessica composes a mailing from any combination of segment groups:
 
 | Group | Default | What "OFF" means |
-|---|---|---|
+| --- | --- | --- |
 | Major Gift Portfolio | Include (custom package) | Donors skip position #2, fall through to their natural RFM position |
 | Mid-Level | Include | Donors skip position #3, fall through as active housefile |
 | Sustainers | Exclude | Toggle ON to include (year-end/emergency) |
 | Cornerstone | Include | Donors skip position #5, flag ignored, score normally in waterfall |
 | New Donor | Exclude (welcome window) | Toggle ON to include |
 | Active Housefile | Include | Toggle OFF for mid-level-only or cornerstone-only mailings |
-| Mid-Level Prospect | Include | Toggle OFF to narrow |
 | Lapsed | Include | Toggle OFF to narrow |
 | Deep Lapsed | Include (with break-even gate) | Toggle OFF to narrow |
 
@@ -217,7 +225,48 @@ Common configurations:
 - **Cornerstone-only reactivation**: Cornerstone ON. Everything else OFF.
 - **Year-end kitchen sink**: Everything ON including Sustainers and New Donor.
 
-When a position is toggled OFF, the waterfall skips it. Donors that would have been caught at a skipped position fall through to the next active position. If a donor's only qualifying position is OFF, they are not in the mailing.
+**Toggle semantics (REVISED 2026-04-28): mixed — flag-based positions EXCLUDE; RFM/composite positions SKIP-AND-FALL-THROUGH.**
+
+Earlier today (2026-04-27) the spec said all toggle OFFs exclude universally. That rule worked for flag-based segments (Cornerstone, Sustainer, etc.) but composed badly for RFM-based segments because Mid-Level and Major Gift are cross-cuts of the RFM lifecycle, not parallel buckets. A "Mid-Level only" mailing (Mid-Level + Major Gift ON, everything else OFF) collapsed to ~65 donors because Active Housefile OFF removed R1+R2 donors and Lapsed OFF removed R3 donors — which are most Mid-Level donors by definition.
+
+**Two-bucket toggle semantics (REVISED 2026-04-28):**
+
+| Toggle | Type | Field / Criteria | OFF means |
+| --- | --- | --- | --- |
+| Cornerstone | Group (flag) | `Cornerstone_Partner__c = true` | **EXCLUDE** — remove all flagged donors from universe before waterfall |
+| Sustainer (Miracle Partner) | Group (flag) | `Miracle_Partner__c = true` | **EXCLUDE** |
+| New Donor | Group (lifecycle flag) | `lifecycle_stage = "New Donor"` | **EXCLUDE** |
+| Major Gift Portfolio | Group (flag) | `Staff_Manager__c` populated | **EXCLUDE** |
+| Mid-Level | Group (cohort) | Mid-Level criteria (24-mo cumulative ≥ $750, gave in 24mo) | **EXCLUDE** |
+| Active Housefile | RFM (lifecycle) | `R_bucket IN (R1, R2)` | **SKIP** — donor not assigned to AH segments; remains in universe |
+| Lapsed | RFM (lifecycle) | `R_bucket = R3` | **SKIP** |
+| Deep Lapsed | RFM (lifecycle) | `R_bucket IN (R4, R5)` | **SKIP** |
+
+**Why this bucketing:**
+
+- **Group (flag-style) toggles** identify a donor cohort. The operator intent is binary: that cohort is either part of this mailing or it isn't. When OFF, the donors are removed before any routing — they never end up in another segment by accident. This includes Mid-Level, which is technically composite (cumulative giving + RFM activity) but operationally is a distinct cohort that should never commingle into general housefile.
+- **RFM toggles** are pure lifecycle position controls. R1–R5 buckets are exhaustive — every active or lapsed donor sits in exactly one. The OFF semantic for RFM is "don't route donors to this position"; donors fall through to the next ON position that matches them, or drop out if no ON position matches. Skip preserves the cross-cut: a Mid-Level donor who is also R1 by RFM gets routed to ML01 (Mid-Level position 4 in the waterfall, before AH at position 7), regardless of AH being ON or OFF.
+
+**Why Mid-Level moved from SKIP to EXCLUDE (2026-04-28):** Initial spec put Mid-Level in SKIP. Bill's clarification: Mid-Level donors should never blend into general housefile. They are a distinct cohort by HRI definition (volume-defined). When Mid-Level is OFF, those donors should be excluded entirely, not silently rolled into AH or LR by RFM.
+
+**Mid-Level Prospect (MP01) eliminated in v3.3** — sub-$750 active donors route to active housefile / lapsed RFM; the MP toggle is removed from the segment group panel. Code retained as deprecated; reinstate by adding the cohort row back here and to `waterfall_engine.GROUP_EXCLUDE_RULES`.
+
+**Concrete examples:**
+
+**Edge case:** if `sum mod 10 = 0`, the check digit is `0` (the formula `(10 − 0) mod 10` = 0).
+- **Standard housefile mailing** (Mid-Level OFF, Major Gift OFF, Cornerstone OFF, Sustainer OFF, New Donor OFF; AH + LR + DL ON): all six flag-OFFs remove their cohorts. Universe = full eligible population minus those six cohorts. Waterfall routes the remainder to AH / LR / DL by RFM. Result: pure general housefile, no commingling, no Mid-Level donors leaking into AH. ✓
+- **Mid-Level only mailing** (Mid-Level ON, Major Gift ON; Cornerstone OFF, Sustainer OFF, New Donor OFF; AH OFF, LR OFF, DL OFF): flag-OFFs exclude Cornerstone/Sustainer/New. AH/LR/DL OFFs SKIP routing (don't exclude). Waterfall position 3 (Mid-Level ON) routes Mid-Level cohort to ML01. Position 2 (MG ON) routes MG cohort to MGP01. Other R1–R5 donors fall through and drop out. Result: ~Mid-Level + MG count, no leakage. ✓
+- **Cornerstone-only reactivation** (Cornerstone ON; everything else OFF): all flag-OFFs exclude their cohorts. Cornerstone routing puts flagged donors in CS01. RFM SKIP-OFFs don't matter — there's nothing left to route. ✓
+- **Cross-cut**: a Cornerstone-flagged donor who is also R1 by RFM. With Cornerstone ON + AH ON: Cornerstone position 5 (or wherever in waterfall) routes them to CS01 before AH runs. They don't double-count. ✓
+
+**Implementation order at runtime:**
+
+1. Pull universe from BQ cache (full eligible population).
+2. **Group (flag-based) exclusion pass:** for each Group-type toggle that is OFF, mark every matching donor for exclusion. Remove all marked donors from the universe.
+3. Waterfall assignment runs on the post-exclusion universe. RFM OFF toggles cause that position to skip its assignment; donors flow to the next ON position they match, or fall through entirely if no ON position matches.
+4. Suppression engine (Tier 1/2/3) applies on top.
+
+**Edge case — donor matches multiple Group toggles, one ON one OFF:** Group OFF wins. Example: Cornerstone ON, Major Gift OFF, donor flagged both — donor is excluded by Major Gift OFF before Cornerstone routing runs. Operator intent matches "OFF means excluded, period."
 
 Below the toggle panel, a **segment rules panel** shows configurable parameters pulled from the MIC Segment Rules tab. Defaults are pre-populated — Jessica only adjusts what's different about this specific campaign:
 
@@ -239,7 +288,7 @@ Jessica clicks "Run Projection." The system executes the three-pass projection:
 **Pass 1 — Full Universe.** The engine queries Salesforce (all ~50K accounts with opportunity-derived fields in one pass), applies the waterfall with all rules, and computes the complete qualified universe with no quantity cap. Results write to the **Draft tab** in the MIC. Jessica reviews the projection in Sheets — segment quantities, economics, break-even flags, and inclusion/exclusion status are all visible in the familiar spreadsheet interface. The Draft tab shows one row per segment:
 
 | Segment Code | Segment Name | Quantity | Hist. Response Rate | Hist. Avg Gift | Proj. Gross Revenue | CPP | Total Cost | Proj. Net Revenue | Break-Even Rate | Margin | Status |
-|---|---|---|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | AH01 | Active 0–6mo $50+ | 3,200 | 8.2% | $72 | $18,893 | $0.48 | $1,536 | $17,357 | 0.67% | +7.53% | ✅ Include |
 | AH02 | Active 0–6mo $25–49 | 5,100 | 6.1% | $38 | $11,818 | $0.48 | $2,448 | $9,370 | 1.26% | +4.84% | ✅ Include |
 | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
@@ -263,7 +312,7 @@ When the budget line cuts through a segment (e.g., budget requires removing 500 
 Each lever row shows:
 
 | Lever | Records Added | Est. Response Rate | Est. Net Revenue | Break-Even? | Include? |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | Extend deep lapsed to 42 months ($75+ cum) | +1,200 | 1.8% | +$396 | ✅ Yes | ☐ |
 | Reduce recent-gift window to 30 days | +400 | 5.5% | +$720 | ✅ Yes | ☐ |
 | Drop response rate floor to 0.6% | +600 | 0.7% | ($48) | ❌ No | ☐ |
@@ -347,7 +396,7 @@ If the retry fails a second time, the UI displays: "Retry failed. Contact Bill."
 The Segmentation Builder queries Account (Household Account model), not Contact. All donor-level rollup fields, address, and suppression flags live on Account. Opportunity detail is queried separately and joined via `AccountId`.
 
 | Field API Name | Purpose | Notes |
-|---------------|---------|-------|
+| --- | --- | --- |
 | `Id` | Account ID | Primary key for join operations |
 | `Constituent_Id__c` | Donor ID | External ID, Text(255). Used for scanline (9-digit zero-padded). |
 | `Name` | Account Name | Household name |
@@ -377,28 +426,33 @@ The Segmentation Builder queries Account (Household Account model), not Contact.
 | `npsp__Sustainer__c` | Sustainer status | Picklist |
 | `Lifecycle_Stage__c` | Lifecycle stage | Formula (Text) |
 
-**Donor-level suppression fields (see Suppression Toggles v2 document for full three-tier system — Bekah reviewed April 13):**
+**Donor-level suppression fields (Bekah review 2026-04-28 — see §6.2.1 for full per-rule semantics; Tier 3 deleted in v3.3):**
 
 | Tier | Field API Name | Label |
-|------|---------------|-------|
+| --- | --- | --- |
 | 1 (Hard) | `npsp__All_Members_Deceased__c` | All Household Members Deceased |
 | 1 (Hard) | `Do_Not_Contact__c` | Do Not Contact At All |
-| 1 (Hard) | `No_Mail_Code__c` | No Mail Code |
-| 1 (Hard) | `npsp__Undeliverable_Address__c` | Undeliverable Billing Address |
-| 1 (Hard) | `NCOA_Deceased_Processing__c` | NCOA Deceased Processing |
+| 1 (Hard) | `Type` | Account.Type ∈ {`Donor Advised Fund`, `Government`} → suppress |
+| 1 (Hard) | `RecordType.Name` | Account Record Type ∈ {`ALM Foundation Organization`, `ALM Grants/Partners Household`, `ALM Grants/Partners Organization`} → suppress |
 | 1 (Hard) | Blank address check (computed) | BillingStreet/City/PostalCode null or empty |
-| 2 (Pref) | `Newsletter_and_Prospectus_Only__c` | Newsletter and Prospectus Only (conditional: include in newsletter campaigns) |
+| 1.5 (Pre-emptive) | `Lifecycle_Stage__c == "New Donor"` | Hard pre-emption above the waterfall — see §6.1 |
+| 2 (Pref, default ON) | `No_Mail_Code__c` | No Mail Code (toggleable; flip OFF in rare authorized cases) |
+| 2 (Pref, default ON) | `Major_Donor_In_House__c` | Major Donor In-House (renamed from `TLC_Donor_Segmentation__c`; see §5.5.1) |
 | 2 (Pref) | `Newsletters_Only__c` | Newsletters Only (conditional: include in newsletter campaigns) |
-| 2 (Pref) | `No_Name_Sharing__c` | No Name Sharing |
 | 2 (Pref) | `Match_Only__c` | Match Only (include in match campaigns only) |
 | 2 (Pref) | `X1_Mailing_Xmas_Catalog__c` | 1 Mailing Xmas Catalog (annual frequency cap) |
 | 2 (Pref) | `X2_Mailings_Xmas_Appeal__c` | 2 Mailings Xmas/Easter (annual frequency cap) |
-| 3 (Rare) | See Suppression Toggles v2 document | 14 fields, toggle defaults OFF |
+
+**Removed from Tier 1 in v3.3:** `npsp__Undeliverable_Address__c` and `NCOA_Deceased_Processing__c` (already removed 2026-04-21 — Faircom processor handles); `No_Mail_Code__c` (moved to Tier 2 as toggleable always-on); `Primary_Contact_is_Deceased__c` (redundant with `npsp__All_Members_Deceased__c`).
+
+**Removed from Tier 2 in v3.3:** `Newsletter_and_Prospectus_Only__c` (Bekah consolidating in SF to `Newsletters_Only__c`); `No_Name_Sharing__c` (acquisition co-op only, not DM); `Address_Unknown__c` (covered by Tier 1 blank-address); `Not_Deliverable__c` (NCOA/Faircom handles).
+
+**Tier 3 deleted in v3.3.** The 14 legacy/rare fields previously listed are no longer used for suppression. Christmas frequency-cap fields (`X1_Mailing_Xmas_Catalog__c`, `X2_Mailings_Xmas_Appeal__c`) promoted to Tier 2.
 
 **Fields requiring Opportunity-level query:**
 
 | Derived Field | Computation | Source |
-|--------------|-------------|--------|
+| --- | --- | --- |
 | HPC (Highest Previous Contribution) | MAX(Amount) WHERE IsWon = true | Opportunity |
 | MRC (Most Recent Contribution) | Amount from most recent Opportunity WHERE IsWon = true | Opportunity |
 | Months Since Last Gift | DATEDIFF(months, LastCloseDate, mail_date) | Computed against campaign mail date |
@@ -424,7 +478,7 @@ This volume is well within Cloud Run's execution window. The Donor File Health p
 After mailing execution, segment assignments load to Salesforce:
 
 | Field | Value |
-|-------|-------|
+| --- | --- |
 | Campaign__c | Parent Campaign ID (matched via appeal_code from MIC) |
 | Segment_Name__c | Segment label |
 | Source_Code__c | Generated appeal code (label rename to "Segment Code" queued) |
@@ -448,7 +502,7 @@ Two co-primary axes: **lifecycle stage** (drives messaging/creative) and **RFM**
 **Lifecycle stages:**
 
 | Stage | Definition |
-|-------|-----------|
+| --- | --- |
 | New Donor | First gift within last 90 days |
 | 2nd Year | First gift 12–24 months ago, gave again in last 12 months |
 | Multi-Year | 3+ years of giving, gave in last 12 months |
@@ -462,7 +516,7 @@ Two co-primary axes: **lifecycle stage** (drives messaging/creative) and **RFM**
 **Recency** (12-month active boundary — research-driven change from TLC's 24-month):
 
 | Bucket | Range |
-|--------|-------|
+| --- | --- |
 | R1 | 0–6 months |
 | R2 | 7–12 months |
 | R3 | 13–24 months |
@@ -472,7 +526,7 @@ Two co-primary axes: **lifecycle stage** (drives messaging/creative) and **RFM**
 **Frequency** (rolling 5-year window):
 
 | Bucket | Range |
-|--------|-------|
+| --- | --- |
 | F1 | 5+ gifts |
 | F2 | 3–4 gifts |
 | F3 | 2 gifts |
@@ -481,7 +535,7 @@ Two co-primary axes: **lifecycle stage** (drives messaging/creative) and **RFM**
 **Monetary** (average gift over 5-year lookback — research finding: average gift predicts response better than HPC):
 
 | Bucket | Range |
-|--------|-------|
+| --- | --- |
 | M1 | $100+ |
 | M2 | $50–$99.99 |
 | M3 | $25–$49.99 |
@@ -493,21 +547,22 @@ Two co-primary axes: **lifecycle stage** (drives messaging/creative) and **RFM**
 ### 5.4 Giving Tier Segments
 
 | Segment | Criteria | Package Treatment |
-|---------|----------|-------------------|
-| **Mid-Level** | Cumulative $1,000–$4,999.99, gave in 24 months, no single DM gift $500+ | High-touch: better paper, first-class postage, invitation envelope |
-| **Mid-Level Prospect** | Cumulative $500–$999.99, gave in 24 months | Standard package with upgrade messaging |
-| **Active Housefile** | Gave in last 12 months, $10–$499.99 cumulative | Standard DM package |
+| --- | --- | --- |
+| **Mid-Level (ML01)** | 1+ LTG, gave in last 24 months, **24-month cumulative giving ≥ $750** (no upper cap). Donors with `Staff_Manager__c` populated route to MJ01 first (waterfall position 2), so portfolio assignment naturally excludes them from ML01. | High-touch: better paper, first-class postage, invitation envelope |
+| **Active Housefile** | Gave in last 12 months, 24-month cumulative < $750 | Standard DM package |
 | **Lapsed Housefile** | Last gift 13–24 months, 2+ lifetime gifts, $10+ cumulative | Standard DM with lapsed messaging |
 | **Deep Lapsed** | Last gift 25–48 months, $10+ cumulative | Selective — only when break-even supports it |
 | **Cornerstone** | `Cornerstone_Partner__c = true` (flag maintained externally) | Legacy ALM branding package, distinct PackageCode |
-| **Sustainer (Miracle Partners)** | Active monthly recurring | Suppressed from general; year-end + emergency override |
+| **Sustainer (Miracle Partners)** | `Miracle_Partner__c = true`. **Wins over Cornerstone:** when a donor is flagged both Sustainer and Cornerstone, Sustainer treatment governs. With sustainer toggle default OFF, Miracle Partners are removed from the universe before any other waterfall assignment; with sustainer toggle ON, they assign to SU01 at waterfall position 4 (which fires before CS01 at position 5). | Suppressed from general; year-end + emergency override |
+| **Mid-Level Prospect (MP01)** | **Eliminated in v3.3.** Sub-$750 active donors route to active housefile / lapsed RFM positions. Code `MP01` retained in the registry as deprecated; not assigned by the engine. To reinstate, add the cohort definition back to `waterfall_engine.GROUP_EXCLUDE_RULES` and the assignment block. | n/a |
 
 **Research-driven changes from TLC baseline:**
 
 | Decision | TLC Baseline | HRI Decision | Rationale |
-|----------|-------------|--------------|-----------|
+| --- | --- | --- | --- |
 | Active/lapsed boundary | 24 months | **12 months** | 13–24mo responds at lapsed rates. Earlier intervention. |
-| Mid-level entry | $500 cumulative | **$1,000 cumulative** | $500–$999 is "Mid-Level Prospect." Reserves expensive package for demonstrated capacity. |
+| Mid-level entry | $500 lifetime cumulative + no DM $500 | **$750 cumulative over last 24 months, no upper cap** (v3.3) | Bill 2026-04-28: split-the-difference floor between TLC's $500 and prior $1,000 spec; lifting the cap captures non-portfolio donors with $5K+ recent giving (44 donors at last refresh). 24-month cumulative (not lifetime) aligns with TLC's historical baseline math and Faircom's expected file size. |
+| Mid-Level Prospect tier | Separate $500–$999.99 cohort | **Eliminated** (v3.3) | Sub-$750 active donors route to active housefile / lapsed RFM. Reduces operator decision surface; can be reinstated if Erica/Jessica need the prospect distinction for ask-string or package routing. |
 | Deep lapsed cutoff | 36 months hard stop | **48 months** with break-even gating | Research shows profitability 3–5 years deep for $100+ donors. |
 | RFM monetary basis | Likely HPC | **Average gift** for RFM scoring | Better response predictor. HPC/MRC still used for ask strings. |
 | Appeal codes | Shared across segments | **Unique** per segment × package × test | Fixes tracking gap. |
@@ -529,6 +584,18 @@ The Segmentation Builder treats Cornerstone as a binary toggle at waterfall posi
 
 > **Deferred: runtime scoring model.** The v2 spec included a scoring model (recency 50%, cumulative giving 30%, frequency 20%, percentile-rank normalization, quartile assignment) to filter the flagged population at runtime. This is deferred pending Cornerstone triage query results. If the triage reduces the population to a directly mailable size (~2,500–4,000), runtime scoring is unnecessary. If the post-triage population is still too large, the scoring model can be re-added as a Phase 7 enhancement.
 
+### 5.5.1 Major Donor In-House Suppression (renamed v3.3)
+
+The Salesforce field `TLC_Donor_Segmentation__c` is renamed to `Major_Donor_In_House__c`. Picklist reduces from three values (`Major - In House`, `Mid - TLC`, blank) to two: `In House` and blank. The 574 records previously flagged `Mid - TLC` are cleared to null by Bekah as part of the rename.
+
+**Semantic shift:** previously this field was a label TLC was supposed to honor in their segmentation but did not act on consistently. v3.3 promotes it to a **Tier 2 always-on suppression toggle** (default ON). Donors flagged `In House` are suppressed from any mailing where a Major Gift Portfolio segment is assigned — they are managed in-house by Erica via portfolio reports, not via direct mail.
+
+**Toggle semantics:**
+- **Default ON (suppress):** flagged donors removed from the mailable universe even if they otherwise qualify for Major Gift Portfolio (MJ01) or any RFM position.
+- **OFF (include):** flagged donors flow through the waterfall normally. Used only when an in-house-only mailing is run (rare). When OFF, the campaign uses the **N campaign prefix** (see §9.1) so the in-house cohort is routed to a distinct file/segment.
+
+**Migration risk:** the SF field rename invalidates any external query that references `TLC_Donor_Segmentation__c`. Verified 2026-04-28 with operator: no HRI repos reference the field; no migration script needed beyond the Bekah picklist cleanup and SF rename.
+
 ---
 
 ## 6. Waterfall Assignment Logic
@@ -536,53 +603,86 @@ The Segmentation Builder treats Cornerstone as a binary toggle at waterfall posi
 ### 6.1 Priority Hierarchy
 
 ```
-1. GLOBAL SUPPRESSION (removed entirely — Tier 1 defaults always ON, see Suppression Toggles v2 doc)
+1. GLOBAL SUPPRESSION — TIER 1 (removed entirely, always ON)
    ├── All Household Members Deceased (npsp__All_Members_Deceased__c)
    ├── Do Not Contact At All (Do_Not_Contact__c)
-   ├── No Mail Code (No_Mail_Code__c)
-   ├── Undeliverable Billing Address (npsp__Undeliverable_Address__c)
-   ├── NCOA Deceased Processing (NCOA_Deceased_Processing__c)
-   ├── Blank address (BillingStreet/City/PostalCode null or empty — per Bekah, this is how TLC suppressed)
-   ├── International (unless campaign includes)
-   └── Tier 2 communication preference flags (default ON, toggleable per campaign — see Suppression Toggles v2 doc)
+   ├── Account.Type ∈ {Donor Advised Fund, Government}                    [v3.3]
+   ├── Account.RecordType.Name ∈ {ALM Foundation Organization,
+   │                              ALM Grants/Partners Household,
+   │                              ALM Grants/Partners Organization}        [v3.3]
+   └── Blank address (BillingStreet/City/PostalCode null or empty)
 
-2. MAJOR GIFT PORTFOLIO [TOGGLE-GATED]
-   └── Assigned to gift officer in Salesforce
-       Default ON: custom package (no ask amounts, handwritten note)
-       Toggle OFF: donors skip this position, fall through to natural RFM position
+   Notes:
+   • npsp__Undeliverable_Address__c and NCOA_Deceased_Processing__c removed 2026-04-21
+     (Faircom processor handles).
+   • No_Mail_Code__c moved to Tier 2 always-on toggle (was Tier 1) — v3.3.
+   • Type / RecordType suppression added 2026-04-28 (Bekah). Existing RFM filters were
+     already catching DAF/Govt/ALM-org records; this is defense-in-depth for
+     cornerstone-only and other RFM-bypassing flows.
 
-3. MID-LEVEL ($1,000–$4,999.99 cumulative, active 24 months) [TOGGLE-GATED]
+1.5 NEW DONOR WELCOME PRE-EMPTION                                         [v3.3]
+   └── If Lifecycle_Stage__c == "New Donor" (first gift within 90-day welcome window):
+       Default behavior: suppress from any non-welcome appeal.
+       Runs BEFORE the cornerstone/major-portfolio/RFM waterfall — first-match-wins
+       does not override this.
+       Reverse: when running the welcome series itself, all other waterfall toggles
+       are turned OFF and the new-donor flag is the sole include criterion. The
+       welcome series is materialized via the New Donor Welcome workflow (separate
+       from the standard waterfall), not via Position 6 of this hierarchy.
 
-4. MONTHLY SUSTAINERS (Miracle Partners) [TOGGLE-GATED]
-   └── Default OFF (suppressed from general appeals)
-       Toggle ON: include in year-end + emergency
+2. TIER 2 DONOR-LEVEL SUPPRESSIONS (default ON, toggleable)
+   ├── No_Mail_Code__c                     (always-on toggle)             [v3.3]
+   ├── Major_Donor_In_House__c             (always-on toggle; renamed
+   │                                        from TLC_Donor_Segmentation__c) [v3.3]
+   ├── Newsletters_Only__c                 (campaign-type conditional)
+   ├── Match_Only__c                       (campaign-type conditional)
+   ├── X1_Mailing_Xmas_Catalog__c          (frequency conditional)
+   └── X2_Mailings_Xmas_Appeal__c          (frequency conditional)
+   See §6.2.1 for per-rule semantics.
 
-5. CORNERSTONE PARTNERS (Cornerstone_Partner__c = true) [TOGGLE-GATED]
-   └── Flag is the curated population — no runtime scoring
-       Flag maintained externally via Cornerstone triage query (see cornerstone-partners-flag-logic.md)
-       Default ON: all flagged donors assigned to CS01, distinct PackageCode
-       Toggle OFF: flag ignored, donors fall through to natural waterfall position
+3. MAJOR GIFT PORTFOLIO [TOGGLE-GATED]
+   └── Staff_Manager__c populated → assigned to MJ01.
+       Default ON: included as own segment with M-prefix campaign code.
+       Toggle OFF: donors skip this position (no fall-through to RFM, since
+       portfolio donors are managed in-house and would otherwise be in-house-flagged).
 
-6. NEW DONOR (first gift within 90 days) [TOGGLE-GATED]
-   └── Default OFF (suppressed during welcome window)
-       Toggle ON: include in year-end + emergency
+4. MID-LEVEL (1+ LTG, gave in 24 months, 24-month cumulative ≥ $750) [TOGGLE-GATED]   [v3.3]
+   └── Assigned to ML01.
+       No upper cap. Donors with Staff_Manager__c populated already routed to
+       MJ01 at position 3 above; they never reach ML01.
+
+5. MONTHLY SUSTAINERS (Miracle Partners) [TOGGLE-GATED]
+   └── Default OFF — Miracle Partners removed from universe entirely.
+       Toggle ON: assigned to SU01 at this position. Wins over Cornerstone (position 6).
+       Year-end / emergency override use case.
+
+6. CORNERSTONE PARTNERS (Cornerstone_Partner__c = true) [TOGGLE-GATED]
+   └── Flag maintained externally via Cornerstone triage query.
+       Default ON: assigned to CS01.
+       Toggle OFF: flag ignored, donors fall through to natural waterfall position.
+       Sustainer at position 5 takes precedence — Cornerstone-AND-Sustainer donors
+       route to SU01 (or are removed if sustainer toggle OFF).
 
 7. ACTIVE HOUSEFILE — HIGH VALUE (R1-R2, F1-F2, M1-M2) [TOGGLE-GATED]
 
 8. ACTIVE HOUSEFILE — STANDARD (R1-R2, remaining) [TOGGLE-GATED]
 
-9. MID-LEVEL PROSPECT ($500–$999.99, active 24 months) [TOGGLE-GATED]
+9. LAPSED RECENT (R3: 13–24 months, 2+ lifetime gifts) [TOGGLE-GATED]
 
-10. LAPSED RECENT (R3: 13–24 months, 2+ lifetime gifts) [TOGGLE-GATED]
-
-11. DEEP LAPSED (R4-R5: 25–48 months) [TOGGLE-GATED]
+10. DEEP LAPSED (R4-R5: 25–48 months) [TOGGLE-GATED]
     └── Include only when break-even positive
         Sub-segment by cumulative giving tier
 
-12. CBNC FLAG OVERRIDE
+11. CBNC FLAG OVERRIDE
     └── Donors with 2+ gifts in non-consecutive years over 10-year window
         who would otherwise be suppressed by lapsed cutoffs
         → Include in Lapsed Recent regardless of recency
+
+ELIMINATED in v3.3:
+   • Mid-Level Prospect (was position 9, $500–$999.99). Sub-$750 active donors
+     route to active housefile / lapsed RFM. MP01 code retained as deprecated.
+   • New Donor as a waterfall position (was position 6). Promoted to Tier 1.5
+     pre-emption (above the waterfall).
 ```
 
 Every position marked `[TOGGLE-GATED]` can be set to ON or OFF per campaign in the segment group toggle panel (Step 2). When a position is OFF, the waterfall skips it entirely — donors that would have been caught at that position fall through to the next active position. Global Suppression (position 1) and CBNC Override (position 12) are always active and not toggleable.
@@ -604,63 +704,69 @@ Every Account is checked against donor-level suppression fields before entering 
 These remove donors from the mailing universe entirely. The builder displays a warning if an operator attempts to disable any Tier 1 rule.
 
 | # | Rule | Field / Logic | Notes |
-|---|------|--------------|-------|
+| --- | --- | --- | --- |
 | 1 | All Household Members Deceased | `npsp__All_Members_Deceased__c = true` | Only deceased flag used for suppression. One-contact-deceased does NOT suppress — surviving spouse keeps receiving mail. |
 | 2 | Do Not Contact | `Do_Not_Contact__c = true` | Explicit donor opt-out |
-| 3 | No Mail | `No_Mail_Code__c = true` | Explicit no-mail request |
-| 4 | Undeliverable Address | `npsp__Undeliverable_Address__c = true` | NPSP undeliverable flag |
-| 5 | NCOA Deceased | `NCOA_Deceased_Processing__c = true` | Flagged via NCOA processing |
-| 6 | Blank Address | `BillingStreet IS NULL OR BillingCity IS NULL OR BillingPostalCode IS NULL` | Computed at runtime. This is how TLC actually suppressed — on blank address fields, not the `Address_Unknown__c` checkbox. |
+| 3 | Account Type — DAF / Government | `Type IN ('Donor Advised Fund', 'Government')` | v3.3. Non-mailable account categories. RFM filters were catching these naturally; explicit suppression is defense-in-depth for cornerstone-only and any future flow that bypasses RFM. |
+| 4 | Account Record Type — ALM organizations | `RecordType.Name IN ('ALM Foundation Organization', 'ALM Grants/Partners Household', 'ALM Grants/Partners Organization')` | v3.3. Same rationale as #3. Most ALM-org records have stale or program-specific giving history that doesn't belong in DM. |
+| 5 | Blank Address | `BillingStreet IS NULL OR BillingCity IS NULL OR BillingPostalCode IS NULL` | Computed at runtime. This is how TLC actually suppressed — on blank address fields, not the `Address_Unknown__c` checkbox. |
+
+**Removed from Tier 1 in v3.3:**
+- `npsp__Undeliverable_Address__c` and `NCOA_Deceased_Processing__c` — already removed 2026-04-21 (Faircom processor handles).
+- `No_Mail_Code__c` — moved to Tier 2 as a toggleable always-on suppression. Rationale: there are rare authorized cases (events, cornerstone exceptions) where the operator legitimately ignores no-mail. Always-on default preserves safety; the toggle adds operator override capability.
+- `Primary_Contact_is_Deceased__c` (was Tier 3) — redundant with `npsp__All_Members_Deceased__c`. The household-level deceased flag is the canonical source; one-contact-deceased should not suppress mail to the surviving spouse.
+
+**Tier 1.5 — New Donor Welcome Pre-emption (default: ON)** *(v3.3)*
+
+Promoted from the GROUP_EXCLUDE waterfall bucket to a hard pre-emption that runs above the waterfall. Rationale: a donor in the 90-day welcome window should never receive a non-welcome appeal regardless of cornerstone / major-portfolio / RFM status — first-match-wins shouldn't be able to override the welcome stream.
+
+| Rule | Field / Logic | Default | Behavior |
+| --- | --- | --- | --- |
+| New Donor Welcome | `Lifecycle_Stage__c = 'New Donor'` | ON (suppress) | Donor removed from any non-welcome appeal. Engineering note: implementation moves this rule out of `waterfall_engine.GROUP_EXCLUDE_RULES` and into a pre-waterfall suppression pass between Tier 1 and Major Gift Portfolio assignment. |
+
+When the welcome series itself runs, the operator turns all other GROUP_EXCLUDE / RFM toggles OFF and the welcome flag becomes the sole include criterion. The welcome series is materialized as a separate workflow (campaign type = `Newsletter` or `Welcome`), not via this position.
 
 **Tier 2 — Communication Preference Suppressions (default: ON, toggleable per campaign)**
 
-These suppress donors based on their stated communication preferences. Some have conditional logic tied to campaign type.
-
 | # | Rule | Field | Default | Conditional Logic |
-|---|------|-------|---------|-------------------|
-| 1 | Newsletter and Prospectus Only | `Newsletter_and_Prospectus_Only__c` | ON | **Campaign-type conditional:** Suppress from all appeal mailings. INCLUDE when campaign type = Newsletter. These donors receive newsletters, receipts, and tax receipts only. |
-| 2 | Newsletters Only | `Newsletters_Only__c` | ON | **Campaign-type conditional:** Same as above. Treat identically to Newsletter and Prospectus Only. (SF cleanup to combine these two flags is queued but not blocking.) |
-| 3 | No Name Sharing | `No_Name_Sharing__c` | ON | Suppress from list exchange/rental and acquisition co-op files. |
-| 4 | Match Only | `Match_Only__c` | ON | **Campaign-type conditional:** Suppress from standard appeals. INCLUDE only when campaign type = Match. |
-| 5 | 1 Mailing Xmas Catalog | `X1_Mailing_Xmas_Catalog__c` | ON | **Frequency conditional:** Donor limited to 1 Christmas mailing per FY. Builder tracks mailing count for flagged donors and suppresses once limit is reached. |
-| 6 | 2 Mailings Xmas/Easter | `X2_Mailings_Xmas_Appeal__c` | ON | **Frequency conditional:** Donor limited to 2 mailings per FY (Christmas + Easter). Builder tracks mailing count for flagged donors and suppresses once limit is reached. |
+| --- | --- | --- | --- | --- |
+| 1 | No Mail Code | `No_Mail_Code__c` | ON (always-on toggle) | v3.3. Was Tier 1; moved here to allow rare authorized override (events, cornerstone exceptions). Default ON preserves safety. |
+| 2 | Major Donor In-House | `Major_Donor_In_House__c` | ON (always-on toggle) | v3.3. Renamed from `TLC_Donor_Segmentation__c`. Suppresses in-house major donors from any standard mailing; they are managed via portfolio reports. Toggle OFF only when running an N-prefix in-house-only campaign (see §9.1). |
+| 3 | Newsletters Only | `Newsletters_Only__c` | ON | **Campaign-type conditional:** Suppress from appeals; INCLUDE when campaign type = Newsletter. Bekah is consolidating `Newsletter_and_Prospectus_Only__c` into this single flag in SF. |
+| 4 | Match Only | `Match_Only__c` | ON | **Campaign-type conditional:** Suppress from standard appeals; INCLUDE only when campaign type = Match. |
+| 5 | 1 Mailing Xmas Catalog | `X1_Mailing_Xmas_Catalog__c` | ON | **Frequency conditional:** Donor limited to 1 Christmas mailing per FY. Builder tracks mailing count for flagged donors and suppresses once limit is reached. Promoted from Tier 3 in v3.3. |
+| 6 | 2 Mailings Xmas/Easter | `X2_Mailings_Xmas_Appeal__c` | ON | **Frequency conditional:** Donor limited to 2 mailings per FY (Christmas + Easter). Promoted from Tier 3 in v3.3. |
+
+**Removed from Tier 2 in v3.3:**
+- `Newsletter_and_Prospectus_Only__c` — Bekah consolidating the underlying SF picklist value into `Newsletters_Only__c`. After Bekah's cleanup, this rule has no consumers.
+- `No_Name_Sharing__c` — used for list-exchange/acquisition co-op only, not direct mail suppression. Bekah confirmed.
+- `Address_Unknown__c` — covered by Tier 1 blank-address check.
+- `Not_Deliverable__c` — NCOA / Faircom handles undeliverable hygiene at processor layer.
 
 **Implementation requirements for Tier 2 conditionals:**
 
-- **Campaign-type awareness (items 1, 2, 4):** The MIC Campaign Calendar must have a `campaign_type` field (or equivalent) that the builder reads. Values include at minimum: Appeal, Newsletter, Match, Catalog. When the campaign type matches the donor's preference, the suppression is skipped and the donor is included.
+- **Campaign-type awareness (items 3, 4):** The MIC Campaign Calendar must have a `campaign_type` field (or equivalent) that the builder reads. Values include at minimum: `Appeal`, `Newsletter`, `Match`, `Catalog`. When the campaign type matches the donor's preference, the suppression is skipped and the donor is included.
 - **Mailing history tracking (items 5, 6):** The builder must query how many mailings a flagged donor has already received in the current FY. This can be derived from Campaign_Segment__c records loaded by prior runs. If count ≥ limit, suppress.
 
-**Tier 3 — Rarely Used / Legacy (default: OFF)**
+**Tier 3 — DELETED (v3.3)**
 
-These fields exist on the Account but are not standard mail suppressions. Available in the toggle panel for edge cases. All default to OFF — donors are NOT suppressed unless an operator explicitly enables the rule for a specific campaign.
+The 14 legacy/rare fields previously in Tier 3 are no longer used for suppression. Two fields previously here were promoted/redirected:
 
-| # | Rule | Field | Notes |
-|---|------|-------|-------|
-| 1 | No Currency Mailers | `No_Currency_Mailers__c` | Legacy. HRI hasn't done currency mailers in years. |
-| 2 | No Gifts or Premiums | `No_Gifts_or_Premiums__c` | Not recently used. |
-| 3 | No Planned Giving Mail | `No_Planned_Giving_Mail__c` | PG mailings go through Canopy, not DM pipeline. Relevant if that changes. |
-| 4 | One Contact Deceased | `Primary_Contact_is_Deceased__c` | Not used for mail suppression — only all-members-deceased suppresses. |
-| 5 | Address Unknown | `Address_Unknown__c` | Legacy flag. Replaced by blank address field check in Tier 1. |
-| 6 | Not Deliverable | `Not_Deliverable__c` | Legacy. Not in current SF views. |
-| 7 | No Donor Elite | `No_Donor_Elite__c` | Legacy. Not used in recent years. |
-| 8 | No Vaccine Solicitations | `No_Vaccine_Solicitations__c` | |
-| 9 | Prospectus Only | `Prospectus_Only__c` | Not currently active. |
-| 10 | No Presidents Gathering | `No_Presidents_Gathering__c` | Event-specific. |
-| 11 | No Presidents Retreat | `No_Presidents_Retreat__c` | Event-specific. |
-| 12 | Banner Ad Constituent | `Banner_Ad_Constituent__c` | Unknown current usage. |
-| 13 | MC Only Account | `MC_Only_Account__c` | Unknown — investigate before using. |
-| 14 | Mid Level Mail Review | `Mid_Level_Review__c` | Legacy. Previously for higher donors. Needs re-evaluation. |
+- `X1_Mailing_Xmas_Catalog__c` and `X2_Mailings_Xmas_Appeal__c` → promoted to Tier 2 (frequency caps).
+- `Primary_Contact_is_Deceased__c` → not used; redundant with the household deceased flag.
+
+The other 12 fields (`No_Currency_Mailers__c`, `No_Gifts_or_Premiums__c`, `No_Planned_Giving_Mail__c`, `Address_Unknown__c`, `Not_Deliverable__c`, `No_Donor_Elite__c`, `No_Vaccine_Solicitations__c`, `Prospectus_Only__c`, `No_Presidents_Gathering__c`, `No_Presidents_Retreat__c`, `Banner_Ad_Constituent__c`, `MC_Only_Account__c`, `Mid_Level_Review__c`) are not active in current operations and not specced for suppression behavior. Per Bill 2026-04-28: too many toggles is not a feature — the cereal-aisle problem.
 
 #### 6.2.2 Segment-Level Suppression (Applied After Waterfall Assignment)
 
 These rules operate on the segmented universe after donors have been assigned to waterfall positions. All toggleable rules can be enabled or disabled per campaign. Defaults are set in the MIC Segment Rules tab. Disabled rules are skipped entirely; they do not suppress any records. This toggle architecture accommodates future rules — new rules are added as new toggle rows in the Segment Rules tab without code changes to the engine.
 
 | Rule | Default | Default State | Notes |
-|------|---------|---------------|-------|
-| Recent-gift window | 45 days | **Toggle: OFF (first 2 campaigns)** | Provisional default — no internal or external benchmark. Ships disabled. Enable after VeraData calibration provides benchmarked value. Override to 30 for year-end/emergency once enabled. |
+| --- | --- | --- | --- |
+| Recent-gift window | 45 days *(spec'd, not built — v3.3)* | **Toggle: OFF + no implementation** | The toggle and parameter (`recent_gift_window_days`) exist in `suppression_engine.py` defaults, but no code path consumes them today. The Reference UI text shows "21 days" — both numbers are inert. Remains unbuilt pending Faircom guidance (Bill 2026-04-28): mail-pull-to-mail-drop timing varies enough that a fixed window may either suppress people whose receipt has cleared or fail to catch the actual overlap. Implementation, value, and toggle wiring will be specced together once Faircom confirms their assumptions. |
 | Break-even floor | CPP ÷ Avg Gift | **Always active** | Auto-suppress segments below floor for 3+ consecutive campaigns |
 | Response rate floor | 0.8% | **Always active** | TLC-era rule (August memo). Starting point pending Campaign Scorecard segment-level data. |
-| Frequency cap | 6 solicitations/year | **Toggle: OFF (first 2 campaigns)** | Provisional default — no internal or external benchmark. Ships disabled. Enable after VeraData calibration provides benchmarked value. Tracks cumulative mailings per donor per FY. |
+| Frequency cap | 6 solicitations/year | **Toggle: OFF (first 2 campaigns)** | Provisional default — no internal or external benchmark. Ships disabled. Enable after VeraData calibration provides benchmarked value. Tracks cumulative mailings per donor per FY. **Currently a no-op** — `frequency` field is not populated, so even if toggle is flipped ON the rule has nothing to gate on. |
 | Holdout percentage | 5% of suppressed segments | **Toggle: ON** | Random sample retained for ROI measurement |
 
 **Suppression audit log:** Every suppression action — both donor-level and segment-level — is logged with donor ID (or Account ID), rule triggered, tier, and campaign ID. The raw audit log is written to a **Google Drive CSV file** (one file per run, archived alongside the output files in the designated folder). The MIC never holds donor-level suppression data. Aggregate suppression counts by rule are surfaced in the Draft tab and the Apps Script UI summary (e.g., "Tier 1 Deceased: 340. Tier 2 Newsletter Only: 1,200. Recent Gift: 800. Frequency Cap: 340."). If total suppression exceeds 15% of the pre-suppression universe, the system flags for review in the UI.
@@ -674,7 +780,7 @@ These rules operate on the segmented universe after donors have been assigned to
 When a campaign is selected, the system reads from the MIC Campaign Calendar row:
 
 | MIC Field | Segmentation Builder Use |
-|-----------|------------------------|
+| --- | --- |
 | `budget_qty_mailed` | Target Quantity |
 | `budget_cost` | Total Budget |
 | Computed: `budget_cost ÷ budget_qty_mailed` | CPP |
@@ -709,7 +815,7 @@ When the budget line cuts through a segment (e.g., budget requires removing 500 
 **Pass 3 — Expansion Options (when universe < target).** System calculates gap and presents expansion levers ranked by economic attractiveness:
 
 | Lever | Computation |
-|-------|-------------|
+| --- | --- |
 | Extend deep lapsed window | Recalculate with wider recency boundary, show added records + economics |
 | Relax recent-gift window | Reduce suppression window, show added records + economics |
 | Lower response rate floor | Reduce floor, show sub-segments that re-enter + economics |
@@ -731,24 +837,33 @@ When `is_followup = true` in the MIC, the system applies additional suppression:
 ### 8.1 Ask Basis by Segment
 
 | Segment | Basis | Rationale |
-|---------|-------|-----------|
-| Active + Mid-Level + Mid-Level Prospect | HPC | Best gift reflects demonstrated capacity |
+| --- | --- | --- |
+| Active + Mid-Level | HPC | Best gift reflects demonstrated capacity |
 | Lapsed + Deep Lapsed | MRC | HPC may be stale; MRC is more realistic anchor |
 | Cornerstone | HPC | High-value reactivation — anchor to demonstrated giving |
 | New Donor | First gift amount | Only data point available |
 
 ### 8.2 Ask Array Formula
 
-Standard: `[1× basis, 1.5× basis, 2× basis, "Best Gift of $___"]`
+Standard: `[1× basis, 1.5× basis, 2× basis, "Best Gift of ``````$<HPC>"]`
 
 | Parameter | Default | Configurable |
-|-----------|---------|-------------|
-| Minimum ask | $15 | Yes |
-| Maximum ask | $4,999.99 | Yes |
+| --- | --- | --- |
+| Minimum ask (floor) | $15 | Yes |
+| Maximum ask (ceiling) | $4,999.99 | Yes |
 | Multipliers | 1×, 1.5×, 2× | Yes |
 | Rounding | Nearest $5 below $100; nearest $25 above $100 | Yes |
+| Fallback ladder (floor collapse) | $15 / $25 / $35 | Yes |
 
 **Rounding direction:** Always round up to the next increment. A computed ask of $22.50 rounds to $25, not $20. Rounding down an ask amount is never correct in fundraising context.
+
+**Floor-collapse fallback (REQUIRED):** When the donor's basis is small enough that `basis × multiplier < floor` for ANY of the three tiers, the entire ladder is replaced with the fallback `$15 / $25 / $35`, applied as a unit. The engine MUST NOT re-floor each tier independently — that produces non-monotonic ladders like `15 / 20 / 15` (observed in A2651 production output for 1,587 lapsed donors with sub-$5 basis). The ladder must always be monotonically increasing.
+
+**AskAmountLabel — BLANK, not prepopulated (REVISED 2026-04-27):** The reply device's "Best Gift of $***" line is a fill-in for the donor, not a prepopulated number. Verified against TLC's production mid-level files. The CSV column \******`AskAmountLabel`*****\* is therefore left empty — the lettershop template renders the static "Best Gift of $***" label with a blank fill-in line.
+
+Earlier spec versions populated this field with LastGift or HPC; both were wrong. Donors complete the field themselves; HRI does not anchor it. The column stays in the schema (so column count is stable across campaigns), but it is always empty in the CSV.
+
+**Mid-Level and Major segments — ask arrays REQUIRED, never blank:** All segments classified as Mid-Level (ML*, MJ*, MP* prefixes) or Major (Staff_Manager populated) MUST have populated ask arrays in the Print and Matchback files. The previous behavior of leaving MJ01 blank (because high-value donors get personal-note treatment) is incorrect — even personal-note packages need ask arrays so the reply device renders correctly. The lettershop template, not the builder output, decides whether to print the asks; the builder always supplies them. Major Gift Portfolio donors routed to the custom-package waterfall position #2 also receive ask arrays (lettershop suppresses display per their template).
 
 ### 8.3 California Versioning
 
@@ -757,7 +872,7 @@ Boolean `CA_Version` flag on Printer File for California addresses when campaign
 ### 8.4 Reply Copy Tier
 
 | Tier | Criteria | Copy Template Key |
-|------|----------|-------------------|
+| --- | --- | --- |
 | ACTIVE | Gave in current + prior FY | "Thank you for your faithful partnership..." |
 | LAPSED | Last gift > 12 months | "It's been some time since we last heard from you..." |
 | NEW | First gift in current FY | "Thank you for joining the family this year..." |
@@ -781,13 +896,24 @@ The Segmentation Builder generates a unique appeal code per segment × campaign 
 ```
 
 | Position | Dimension | Values |
-|----------|-----------|--------|
-| 1 | Program | R = Renewal/Housefile, M = Mid-Level, C = Cornerstone |
+| --- | --- | --- |
+| 1 | Program | A = Active Housefile, M = Mid-Level + Major Gift Portfolio, C = Cornerstone, **N = In-House Major Donor** *(v3.3)*. Legacy R-prefix (Renewal/Housefile) maps to A. **No J-prefix** — earlier interpretation in v25/v26 was incorrect; "MJ" inside an M-prefix campaign is the segment portion (Major Gift Portfolio segment), not a campaign prefix. |
 | 2–3 | Fiscal Year | 26, 27 |
 | 4–5 | Campaign | 01–12 (monthly), NL = Newsletter |
 | 6–9 | Segment | 4-character persistent code (AH01, ML01, LR01, CS01, etc.) |
 | 10–12 | Package | P01, P02 — persistent per creative treatment |
 | 13–15 | Test/Control | CTL, TSA, TSB |
+
+**Cohort-prefix routing rules (v3.3 — code lives in `config.COHORT_PREFIX_RULES`):**
+
+| Cohort | Campaign prefix | Triggered when |
+| --- | --- | --- |
+| Active Housefile, Cornerstone, Sustainer, CBNC | A | Standard housefile mailings (default) |
+| Mid-Level, Major Gift Portfolio | M | Mid-Level toggle ON or Major Gift Portfolio toggle ON |
+| **In-House Major Donor** | **N** | Major_Donor_In_House__c suppression toggle is OFF (rare — running an in-house-only mailing). Routed to a distinct file/segment. |
+| Cornerstone-only test | C | Cornerstone toggle ON, all other toggles OFF (e.g., A2643 selection postcards) |
+
+**Removed:** the J-prefix rule that v25/v26 had wired for "in-house mailings" was a misinterpretation — there is no J campaign prefix. Replace any J-prefix rules in `config.COHORT_PREFIX_RULES` with N-prefix for in-house and remove the J entry entirely.
 
 Example: `R2605AH01P01CTL` = Renewal, FY26, Easter, Active Housefile tier 1, Package 01, Control.
 
@@ -814,15 +940,15 @@ The Segmentation Builder generates the scanline as a computed field in the Print
 ### 9.3 Segment Code Registry (in MIC Segment Rules tab)
 
 | Code | Segment |
-|------|---------|
+| --- | --- |
 | AH01 | Active 0–6mo, $50+ avg |
 | AH02 | Active 0–6mo, $25–$49.99 avg |
 | AH03 | Active 0–6mo, under $25 avg |
 | AH04 | Active 7–12mo, $50+ avg |
 | AH05 | Active 7–12mo, $25–$49.99 avg |
 | AH06 | Active 7–12mo, under $25 avg |
-| ML01 | Mid-Level ($1,000–$4,999.99) |
-| MP01 | Mid-Level Prospect ($500–$999.99) |
+| ML01 | Mid-Level (24-month cumulative ≥ $750, no upper cap) — *v3.3 redefinition* |
+| MP01 | Mid-Level Prospect — **DEPRECATED v3.3.** Code retained in registry; not assigned by the engine. Sub-$750 active donors route to active housefile / lapsed RFM. |
 | LR01 | Lapsed Recent 13–18mo |
 | LR02 | Lapsed Recent 19–24mo |
 | DL01 | Deep Lapsed 25–36mo, $100+ cum |
@@ -851,13 +977,13 @@ Filename: `HRI_[CampaignCode]_[Lane]_PRINT_[YYYYMMDD].csv`
 This file contains only what the printer and caging company need. The 15-character internal appeal code is NOT in this file.
 
 | # | Field | Type | Notes |
-|---|-------|------|-------|
+| --- | --- | --- | --- |
 | 1 | DonorID | Text(9) | `Constituent_Id__c`, zero-padded to 9 digits |
 | 2 | CampaignAppealCode | Text(9) | 9-character appeal code in `TYYMCPSS0` format |
-| 3 | Scanline | Text | Computed: DonorID + CampaignAppealCode. Printed on outer envelope and reply device. |
+| 3 | Scanline | Text | ALM scanline format. Computed per algorithm in §10.1.1. Printed on outer envelope and reply device. |
 | 4 | PackageCode | Text(3) | Routes creative version at lettershop |
 | 5 | Addressee | Text | `npo02__Formal_Greeting__c` from Account. Full addressing name (e.g., "Mr. and Mrs. Brian Schwanbeck"). Per VeraData requirement — this is the name printed on the envelope. |
-| 6 | Salutation | Text | `Special_Salutation__c` from Account. Expected format: "Mr. Petersen" (title + last name), not just "Mr." If field stores title only, builder computes from `Special_Salutation__c` + `Last_Name__c`. Confirm field content in Phase 1 diagnostic. |
+| 6 | Salutation | Text | `npo02__Informal_Greeting__c` from Account. Drives **letter body** content (e.g., "Dear Benjamin,"). Distinct from Addressee (column 5) which uses `npo02__Formal_Greeting__c` and drives envelope addressing. A2643 production output had this column blank — bug, wrong source field name in original spec. Corrected 2026-04-27. |
 | 7 | FirstName | Text | Personalization |
 | 8 | LastName | Text | Personalization |
 | 9 | Address1 | Text | Mailing address |
@@ -877,6 +1003,86 @@ This file contains only what the printer and caging company need. The 15-charact
 | 23 | PriorFYGiving | Currency | For reply device variable copy |
 | 24 | CAVersion | Boolean | California version flag (33x Shipping match only) |
 
+#### 10.1.1 ALM Scanline Format and Check Digit Algorithm
+
+**Format:** `<DonorID> <CampaignAppealCode> <CheckDigit>`
+
+- **DonorID:** 9 characters. Numeric IDs zero-padded left to 9 digits (e.g., `70264965` → `070264965`). S-prefixed IDs (`S00xxxxxx`) are already 9 characters; pass through unchanged. Prospect IDs are 9 digits starting with `3`.
+- **Single space** separator
+- **CampaignAppealCode:** 9 characters, `TYYMCPSS0` format
+- **Single space** separator
+- **CheckDigit:** 1 numeric character, computed per the algorithm below.
+
+Total length: 21 characters (9 + 1 + 9 + 1 + 1).
+
+Example: `070122327 W16B1AJ30 6`
+
+**Check digit algorithm (7 steps):**
+
+Operates on the concatenated 18-character string of `DonorID + CampaignAppealCode` (no spaces, no check digit).
+
+**Step 1.** Treat the 18-character scanline-without-check-digit as 18 individual characters.
+
+**Step 2.** Replace alphabetical characters with their conversion-table values. Numeric characters retain their value. Conversion table:
+
+| Char | Value |  | Char | Value |  | Char | Value |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | 1 |  | J | 1 |  | S | 2 |
+| B | 2 |  | K | 2 |  | T | 3 |
+| C | 3 |  | L | 3 |  | U | 4 |
+| D | 4 |  | M | 4 |  | V | 5 |
+| E | 5 |  | N | 5 |  | W | 6 |
+| F | 6 |  | O | 6 |  | X | 7 |
+| G | 7 |  | P | 7 |  | Y | 8 |
+| H | 8 |  | Q | 8 |  | Z | 9 |
+| I | 9 |  | R | 9 |  |  |  |
+
+Numerics: `0`→0, `1`→1, …, `9`→9.
+
+**Step 3.** Assign alternating weights `1, 2, 1, 2, 1, 2, …` across the 18 positions (position 1 → 1, position 2 → 2, position 3 → 1, etc.).
+
+**Step 4.** Multiply each Step-2 value by its Step-3 weight. Result is 18 products.
+
+**Step 5.** For each product: if the product is greater than 9, subtract 9. Otherwise keep as-is. Result is 18 single-digit values.
+
+**Step 6.** Sum the 18 values from Step 5.
+
+**Step 7.** Compute `CheckDigit = (10 - (sum mod 10)) mod 10`. Single-digit result, 0–9.
+
+**Worked example 1** — scanline `070122327W16B1AJ30`:
+- Step 2: `0,7,0,1,2,2,3,2,7, 6,1,6,2,1,1,1,3,0`
+- Step 3: `1,2,1,2,1,2,1,2,1, 2,1,2,1,2,1,2,1,2`
+- Step 4: `0,14,0,2,2,4,3,4,7, 12,1,12,2,2,1,2,3,0`
+- Step 5: `0,5,0,2,2,4,3,4,7, 3,1,3,2,2,1,2,3,0`
+- Step 6: sum = 44
+- Step 7: (10 − (44 mod 10)) mod 10 = (10 − 4) mod 10 = **6**
+- Full scanline: `070122327 W16B1AJ30 6`
+
+**Worked example 2** — scanline `010050933M2042AH70`:
+- Step 2: `0,1,0,0,5,0,9,3,3, 4,2,0,4,2,1,8,7,0`
+- Step 4: `0,2,0,0,5,0,9,6,3, 8,2,0,4,4,1,16,7,0`
+- Step 5: `0,2,0,0,5,0,9,6,3, 8,2,0,4,4,1,7,7,0`
+- Step 6: sum = 58
+- Step 7: (10 − 8) mod 10 = **2**
+- Full scanline: `010050933 M2042AH70 2`
+
+**Worked example 3** — scanline `000016196A2631AH60`:
+- Step 2: `0,0,0,0,1,6,1,9,6, 1,2,6,3,1,1,8,6,0`
+- Step 4: `0,0,0,0,1,12,1,18,6, 2,2,12,3,2,1,16,6,0`
+- Step 5: `0,0,0,0,1,3,1,9,6, 2,2,3,3,2,1,7,6,0`
+- Step 6: sum = 46
+- Step 7: (10 − 6) mod 10 = **4**
+- Full scanline: `000016196 A2631AH60 4`
+
+
+**Matchback row scope (REVISED 2026-04-27):** The Matchback File contains **only mailed donors + holdouts**, NOT donors excluded by Pass 2 budget trim or data quality. Specifically:
+
+- Include rows where `Holdout=False AND ExclusionReason=""` (mailed, in Print File).
+- Include rows where `Holdout=True` regardless of ExclusionReason (5% control group, used for ROI measurement — kept even if also flagged for quantity_reduction).
+- **Exclude rows where \****`Holdout=False AND ExclusionReason != ""`** — these are donors trimmed by Pass 2 (`quantity_reduction`), donors with bad IDs (`missing_constituent_id`, `duplicate_constituent_id`), or other data-quality exclusions. They were not mailed, are not part of the control group, and have no role in matchback or attribution.
+
+Earlier behavior emitted all 48,565 rows for A2651 (mailed + holdouts + 8,932 quantity_reduction trims). New rule emits ~39,624 (37,197 mailed + 2,427 holdouts including 477 in trim-overlap). The trimmed rows are still recorded in the suppression audit log (separate file) for audit purposes — the Matchback is for matchback, not for trim accounting.
+
 ### 10.2 Internal Matchback File (stays on HRI's side)
 
 CSV, UTF-8, comma-delimited, double-quote qualifier. One row per donor.
@@ -886,40 +1092,42 @@ Stored in designated Google Drive folder. Never transmitted to agency.
 This file contains everything — the full 15-character appeal code, all segment detail, and all analyst fields. When caging returns a response file with donor IDs, HRI joins against this file to recover segment-level performance data.
 
 | # | Field | Type | Notes |
-|---|-------|------|-------|
+| --- | --- | --- | --- |
 | 1 | DonorID | Text(9) | `Constituent_Id__c`, zero-padded to 9 digits |
 | 2 | CampaignAppealCode | Text(9) | 9-char appeal code (matches Printer File) |
-| 3 | InternalAppealCode | Text(15) | 15-char code with segment × package × test granularity |
+| 3 | Scanline | Text(21) | Full ALM scanline matching Printer File. Required for Aegis gift-matchback (Aegis matches incoming gifts on full scanline, not DonorID alone). Computed per §10.1.1. |
+| 4 | InternalAppealCode | Text(15) | 15-char code with segment × package × test granularity |
+| (last) | Account_CASESAFEID | Text(18) | `Account.Account_CASESAFEID__c` formula field (returns 18-char case-safe SF Account Id). Sourced via SOQL keyed on `Constituent_Id__c`. Use HRI's documented formula field (not raw `Account.Id`) so the column lineage matches HRI's SF schema vocabulary. Distinct from `Constituent_Id__c` (HRI donor account number, in the DonorID column) — this is the SF technical cross-reference. Added to Matchback only — not Print. |
 | 4 | SegmentCode | Text(4) | AH01, ML01, CS01, etc. |
 | 5 | SegmentName | Text | Human-readable segment label |
 | 6 | PackageCode | Text(3) | P01, P02, etc. |
 | 7 | TestFlag | Text(3) | CTL, TSA, TSB |
 | 8 | Addressee | Text | `npo02__Formal_Greeting__c` |
 | 9 | Salutation | Text | `Special_Salutation__c` |
-| 10 | FirstName | Text | |
-| 11 | LastName | Text | |
-| 11 | Address1 | Text | |
-| 12 | Address2 | Text | |
-| 13 | City | Text | |
-| 14 | State | Text(2) | |
-| 15 | ZIP | Text(10) | |
-| 16 | Country | Text | |
-| 17 | AskAmount1 | Currency | |
-| 18 | AskAmount2 | Currency | |
-| 19 | AskAmount3 | Currency | |
-| 20 | AskAmountLabel | Text | |
-| 21 | ReplyCopyTier | Text | |
-| 22 | LastGiftAmount | Currency | |
-| 23 | LastGiftDate | Date | |
-| 24 | CurrentFYGiving | Currency | |
-| 25 | PriorFYGiving | Currency | |
+| 10 | FirstName | Text |  |
+| 11 | LastName | Text |  |
+| 11 | Address1 | Text |  |
+| 12 | Address2 | Text |  |
+| 13 | City | Text |  |
+| 14 | State | Text(2) |  |
+| 15 | ZIP | Text(10) |  |
+| 16 | Country | Text |  |
+| 17 | AskAmount1 | Currency |  |
+| 18 | AskAmount2 | Currency |  |
+| 19 | AskAmount3 | Currency |  |
+| 20 | AskAmountLabel | Text |  |
+| 21 | ReplyCopyTier | Text |  |
+| 22 | LastGiftAmount | Currency |  |
+| 23 | LastGiftDate | Date |  |
+| 24 | CurrentFYGiving | Currency |  |
+| 25 | PriorFYGiving | Currency |  |
 | 26 | CumulativeGiving | Currency | Lifetime total |
 | 27 | LifecycleStage | Text | New / 2nd Year / Multi-Year / Reactivated / Lapsed / Deep Lapsed / Expired |
-| 28 | CAVersion | Boolean | |
-| 29 | CornerstoneFlag | Boolean | |
+| 28 | CAVersion | Boolean |  |
+| 29 | CornerstoneFlag | Boolean |  |
 | 30 | Email | Text | Future multi-channel |
-| 31 | SustainerFlag | Boolean | |
-| 32 | GiftCount12Mo | Integer | |
+| 31 | SustainerFlag | Boolean |  |
+| 32 | GiftCount12Mo | Integer |  |
 | 33 | RFMScore | Text(3) | Composite R×F×M bucket code |
 
 ### 10.3 Housefile Suppression File
@@ -1009,7 +1217,7 @@ Agency returns: actual mail date, actual quantities by segment, nixie/return rep
 ## 13. Dependencies
 
 | Dependency | Status | Impact if Blocked |
-|-----------|--------|-------------------|
+| --- | --- | --- |
 | Salesforce API access | Available | Cannot proceed |
 | MIC Google Sheet | Exists (914 rows, FY20–FY26) | Must add Draft, Segment Detail, Budget Summary, Segment Rules tabs |
 | Campaign Scorecard v26 | Deployed | Pro forma uses manual estimates until Scorecard data available by new segment codes |
@@ -1022,28 +1230,142 @@ Agency returns: actual mail date, actual quantities by segment, nixie/return rep
 
 ## 14. Open Items for Build Sessions
 
-1. ~~**Verify HPC/MRC field availability.**~~ **RESOLVED.** HPC = `npo02__LargestAmount__c` (Account rollup, Currency). MRC = `npo02__LastOppAmount__c` (Account rollup, Currency). Both are NPSP-maintained rollups on Account. Phase 1 diagnostic validates data quality (populated, not stale).
+1. **~~Verify HPC/MRC field availability.~~** **RESOLVED.** HPC = `npo02__LargestAmount__c` (Account rollup, Currency). MRC = `npo02__LastOppAmount__c` (Account rollup, Currency). Both are NPSP-maintained rollups on Account. Phase 1 diagnostic validates data quality (populated, not stale).
 
-2. ~~**Sustainer identification field.**~~ **RESOLVED.** `Miracle_Partner__c` on Account (Checkbox). This is the toggle-gated waterfall position #4.
+2. **~~Sustainer identification field.~~** **RESOLVED.** `Miracle_Partner__c` on Account (Checkbox). This is the toggle-gated waterfall position #4.
 
-3. ~~**Major gift portfolio identification.**~~ **RESOLVED.** `Staff_Manager__c` on Account (Lookup to User). Populated = donor is assigned to a gift officer = qualifies for waterfall position #2. Phase 1 diagnostic should also review the `hri-major-gift-app` repo for any additional include/exclude logic beyond the Staff Manager lookup (that app already makes portfolio membership decisions).
+3. **~~Major gift portfolio identification.~~** **RESOLVED.** `Staff_Manager__c` on Account (Lookup to User). Populated = donor is assigned to a gift officer = qualifies for waterfall position #2. Phase 1 diagnostic should also review the `hri-major-gift-app` repo for any additional include/exclude logic beyond the Staff Manager lookup (that app already makes portfolio membership decisions).
 
-4. ~~**Output file format validation with VeraData.**~~ **RESOLVED.** VeraData reviewed Printer File layout (Shaun Petersen, April 14, 2026). Two additions incorporated: (a) Addressee field added (`npo02__Formal_Greeting__c` — full addressing name for envelope), (b) Salutation field clarified (must be "Mr. Petersen" format, not just title). VeraData also requests NCOA certificate with data delivery — operational item for Jessica, not a system change. Printer File layout now confirmed.
+4. **~~Output file format validation with VeraData.~~** **RESOLVED.** VeraData reviewed Printer File layout (Shaun Petersen, April 14, 2026). Two additions incorporated: (a) Addressee field added (`npo02__Formal_Greeting__c` — full addressing name for envelope), (b) Salutation field clarified (must be "Mr. Petersen" format, not just title). VeraData also requests NCOA certificate with data delivery — operational item for Jessica, not a system change. Printer File layout now confirmed.
 
-5. ~~**Historical response rates by new segment codes.**~~ **RESOLVED in spec.** Three-level fallback: (1) Jessica selects baseline campaign(s) by appeal code, (2) auto-lookup rolling average across all prior campaigns with matching segment codes, (3) manual entry for new codes with no history. See Section 7.2.
+5. **~~Historical response rates by new segment codes.~~** **RESOLVED in spec.** Three-level fallback: (1) Jessica selects baseline campaign(s) by appeal code, (2) auto-lookup rolling average across all prior campaigns with matching segment codes, (3) manual entry for new codes with no history. See Section 7.2.
 
-6. ~~**MIC sheet ID.**~~ **RESOLVED.** MIC is a live Google Sheet: `12mLmegbb89Rf4-XGPfOozYRdmXmM67SP_QaW8aFTLWw`. Draft, Segment Detail, Budget Summary, and Segment Rules tabs to be added during Phase 1.
+6. **~~MIC sheet ID.~~** **RESOLVED.** MIC is a live Google Sheet: `12mLmegbb89Rf4-XGPfOozYRdmXmM67SP_QaW8aFTLWw`. Draft, Segment Detail, Budget Summary, and Segment Rules tabs to be added during Phase 1.
 
 7. **Scorecard actuals write-back.** The Campaign Scorecard currently writes to its own data sheet. Phase 8 extends it to also write actuals to the MIC Campaign Calendar tab. Confirm this doesn't require a Scorecard rebuild — likely just an additional Sheets API write at the end of the existing refresh pipeline.
 
-8. ~~**Appeal code prefix precedence rule.**~~ **RESOLVED.** Applies to Campaign Scorecard data processing only (historical data interpretation). The Segmentation Builder generates appeal codes using the prefix conventions from the Appeal Codes master document — no conflict possible because the builder is the system of record for new codes. The first character (T position in `TYYMCPSS0`) is set by the segment group assignment at generation time.
+8. **~~Appeal code prefix precedence rule.~~** **RESOLVED.** Applies to Campaign Scorecard data processing only (historical data interpretation). The Segmentation Builder generates appeal codes using the prefix conventions from the Appeal Codes master document — no conflict possible because the builder is the system of record for new codes. The first character (T position in `TYYMCPSS0`) is set by the segment group assignment at generation time.
 
 9. **Suppression parameter calibration with VeraData.** The 45-day recent-gift window and 6-solicitation/year frequency cap are provisional defaults with no internal or external benchmark. Both ship as OFF for the first two production campaigns. Consult VeraData during onboarding for recommended values. Enable via toggle once calibrated.
 
 10. **Sheets-as-database migration evaluation.** After first full year of operation, evaluate whether the MIC Google Sheet should migrate to Cloud SQL or BigQuery. See architecture note in Section 2.2.
 
-11. ~~**Google Drive output folder ID.**~~ **RESOLVED.** Output folder: `https://drive.google.com/drive/folders/1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC`. Printer Files, Internal Matchback Files, and suppression audit logs archived here.
+11. **~~Google Drive output folder ID.~~** **RESOLVED.** Output folder: `https://drive.google.com/drive/folders/1GTBtYglpBaAfxynjZM1e3lioTb6O-qyC`. Printer Files, Internal Matchback Files, and suppression audit logs archived here.
 
-12. ~~**Suppression toggles team verification.**~~ **RESOLVED.** Bekah reviewed April 13, 2026. Key changes: `Primary_Contact_is_Deceased__c` moved to Tier 3 (only all-members-deceased suppresses). `Enews_Only__c` removed (Contact-level field). `Address_Unknown__c` and `Not_Deliverable__c` moved to Tier 3 (replaced by blank address field check). `Match_Only__c`, `No_Name_Sharing__c`, `X1_Mailing_Xmas_Catalog__c`, `X2_Mailings_Xmas_Appeal__c` moved up to Tier 2. `Newsletter_Only` and `Newsletter_and_Prospectus_Only` confirmed as conditional — include in newsletter campaigns, suppress from everything else. Pending: `EU_Data_Anonymization__c` disposition; SF cleanup to combine newsletter flags.
+12. **~~Suppression toggles team verification.~~** **RESOLVED.** Bekah reviewed April 13, 2026. Key changes: `Primary_Contact_is_Deceased__c` moved to Tier 3 (only all-members-deceased suppresses). `Enews_Only__c` removed (Contact-level field). `Address_Unknown__c` and `Not_Deliverable__c` moved to Tier 3 (replaced by blank address field check). `Match_Only__c`, `No_Name_Sharing__c`, `X1_Mailing_Xmas_Catalog__c`, `X2_Mailings_Xmas_Appeal__c` moved up to Tier 2. `Newsletter_Only` and `Newsletter_and_Prospectus_Only` confirmed as conditional — include in newsletter campaigns, suppress from everything else. Pending: `EU_Data_Anonymization__c` disposition; SF cleanup to combine newsletter flags.
 
-13. ~~**Campaign_Segment__c field name verification.**~~ **RESOLVED.** Builder writes to existing `Source_Code__c` field on Campaign_Segment__c using the generated appeal code values. Label rename from "Source Code" to "Segment Code" queued for Bekah but not blocking the build.
+13. **~~Campaign\_Segment\_\_c field name verification.~~** **RESOLVED.** Builder writes to existing `Source_Code__c` field on Campaign_Segment__c using the generated appeal code values. Label rename from "Source Code" to "Segment Code" queued for Bekah but not blocking the build.
+
+---
+
+## 17. Operator Documentation — In-UI Reference Tabs
+
+Two tabs in the Apps Script **web app UI** (not the MIC sheet) populated from this spec at deploy time. Operator clicks a tab in the tool and reads the docs without leaving the workflow. They exist so any operator can answer "why is the tool doing this?" without reading SPEC.md or asking Bill.
+
+**UI placement:** add tab navigation to the existing web app. Recommended layout:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  HRI Segmentation Builder                            │
+│  [Build Campaign] [Reference] [Buttons]              │
+├──────────────────────────────────────────────────────┤
+│  (active panel content here)                          │
+└──────────────────────────────────────────────────────┘
+```
+
+- **Build Campaign** — existing UI (campaign select, toggle panel, scenario editor, etc.). Default tab on load.
+- **Reference** — content from §17.1 below, rendered as HTML. Static content, no interaction.
+- **Buttons** — content from §17.2 below, rendered as HTML table.
+
+**Content delivery:** static HTML in the Apps Script web app files (`Reference.html`, `Buttons.html` or equivalent). Content baked at deploy time from this spec. When the spec changes substantively, builder regenerates the HTML and redeploys via clasp push. No runtime sync mechanism required — the spec change cycle is the deploy cycle. Header on each tab shows "Synced from SPEC v<version>, deployed <date>" so operators can see currency.
+
+### 17.1 Reference tab content (Logic & Math)
+
+**Header (top of Reference tab panel):**
+- Title: "HRI Segmentation Builder — Logic & Math Reference"
+- Subtitle: "Synced from SPEC.md v<version>, deployed <ISO date>. Static content; re-deploys with the Apps Script when spec changes."
+
+**Section blocks (each as a labeled section in the HTML):**
+
+1. **Waterfall Hierarchy** — table with columns: Position #, Position Name, Field/Logic, Toggle Default, Notes. Rows (v3.3): Tier 1 Global Suppression, Tier 1.5 New Donor Welcome Pre-emption, Tier 2 Donor-Level Suppressions, Major Gift Portfolio, Mid-Level, Sustainers, Cornerstone, Active Housefile (high value + standard), Lapsed, Deep Lapsed, CBNC Override. Source: SPEC §6.1.
+
+2. **Suppression — Tier 1 (Hard, always ON)** — columns: #, Rule, Field, Notes. Source: SPEC §6.2.1.
+
+3. **Suppression — Tier 2 (Donor-Level + Communication Preferences, default ON, toggleable)** — columns: #, Rule, Field, Default, Conditional Logic. Source: SPEC §6.2.1.
+
+4. **Tier 3 — DELETED in v3.3.** Reference tab should NOT render a Tier 3 section. If any pre-v3.3 deploy of the Reference HTML still shows Tier 3, regenerate from the v3.3 spec at next deploy.
+
+5. **Segment-Level Suppression Rules** — columns: Rule, Default, State (toggleable/always), Notes. Includes: Recent-gift window, Break-even floor, Response rate floor, Frequency cap, Holdout percentage. Source: SPEC §6.2.2.
+
+6. **Ask String Math** — narrative section explaining:
+  - Basis selection per segment (HPC for active/mid-level/cornerstone, MRC for lapsed, first gift for new donor).
+  - Formula: `[1× basis, 1.5× basis, 2× basis, "Best Gift of $<HPC>"]`.
+  - Floor ($15), ceiling ($4,975), round-up rule.
+  - Floor-collapse fallback: when ANY tier < floor, ladder replaced as a unit with $15 / $25 / $35.
+  - AskAmountLabel sources from HPC (`npo02__LargestAmount__c`), not LastGift. Fallback to ask3 if HPC null.
+  - Mid-Level (ML*, MJ*, MP*) and Major Gift Portfolio donors ALWAYS get populated ask arrays; lettershop template controls display.
+
+7. **Scanline & Check Digit** — narrative + table:
+  - Format: `<DonorID 9-char> <CampaignAppealCode 9-char> <CheckDigit 1-char>` = 21 chars total.
+  - Conversion table (A→1 ... Z→9 mapping per SPEC §10.1.1).
+  - 7-step algorithm.
+  - One worked example (e.g., `070122327W16B1AJ30` → check digit 6).
+
+8. **Appeal Code Structure** — table:
+  - 9-char Print code: `<TypePrefix><YY><CC><SegmentCode>` (positions 1, 2-3, 4-5, 6-9).
+  - 15-char Internal code: `<TypePrefix><YYCC><SegmentCode><PackageCode><TestFlag>` (used in Matchback InternalAppealCode).
+  - TypePrefix legend: A=Appeal, M=Mid-Level, R=Renewal, C=Cornerstone (preserve existing per-file prefix).
+
+9. **Reply Copy Tier** — table: Tier, Criteria, Copy Template Key. Four rows (ACTIVE, LAPSED, NEW, REACTIVATED). Source: SPEC §8.4.
+
+10. **Holdout & Floor Collapse Edge Cases** — narrative explaining:
+  - 5% holdout from suppressed segments — Holdout=true rows in Matchback are tracked but not mailed.
+  - Floor collapse — when basis is too small for any ladder tier to clear floor, fallback ladder applied as unit.
+
+11. **PackageCode Routing** — narrative explaining:
+  - PackageCode mapping per segment group from MIC Segment Rules tab (Active → P01, Mid-Level → P02, Cornerstone → P03, etc.).
+  - Lettershop sorts on PackageCode to route creative.
+
+12. **Output File Columns — Print** — table with Print File column list (24 columns), source field per column. Source: SPEC §10.1.
+
+13. **Output File Columns — Matchback** — table with Matchback column list (37+ columns including new Scanline at pos 3 and Account_CASESAFEID at end), source field per column. Source: SPEC §10.2.
+
+### 17.2 Buttons tab content
+
+**Header (top of Buttons tab panel):**
+- Title: "HRI Segmentation Builder — Buttons & Actions"
+- Subtitle: "Synced from SPEC.md v<version>, deployed <ISO date>. Static content; re-deploys with the Apps Script when spec changes."
+
+**Single HTML table** with columns: **Button / Action**, **What It Does**, **When To Use**, **What Gets Written / Changed**, **Reversible?**.
+
+Rows (the button list will evolve with the UI; current set):
+
+| Button / Action | What It Does | When To Use | What Gets Written | Reversible? |
+| --- | --- | --- | --- | --- |
+| Refresh Universe | Re-fetches the qualified universe from BigQuery cache for the selected campaign. Re-applies waterfall, suppressions, segment assignment. | When Jessica selects a different campaign, or when underlying SF data has changed since last pull. | In-memory universe (browser state). Draft tab not yet written. | Yes — just click again. |
+| Run Projection | Computes economics (response rate, avg gift, projected gross/net revenue, break-even, margin) per segment based on Historical Baseline. Writes one row per segment to the Draft tab. | After the universe is loaded and Jessica wants to see the projection. | Draft tab in the MIC. Overwrites prior Draft contents. | Yes — re-run. |
+| Edit Scenario (per-segment toggle, % slider, target type) | Browser-side what-if. Adjusts segment inclusion or quantity within the qualified universe. No new SF query. Updates running totals on the screen. | Iterating to hit a quantity / gross / net / ROI target. | UI display only. Does not touch Draft tab until "Save Scenario" or "Approve". | Yes — toggle back. |
+| Save Scenario | Saves current scenario state to Draft tab. | When iterating on a non-final scenario across sessions or to share with Bill. | Draft tab updated. | Partially — overwrites prior Draft. |
+| Approve | Locks the current Draft as the final segmentation for this campaign. Copies Draft tab to Segment Detail tab as permanent record. Triggers Generate Mailing File. | When Jessica + Bill have signed off on the projection. | Segment Detail tab (one row per segment for this campaign). Campaign Calendar `link_to_segments` column auto-populates. | Difficult — re-running Approve overwrites Segment Detail rows for this campaign on upsert. |
+| Generate Mailing File | Produces Print File CSV + Matchback File CSV with per-donor scanlines, ask arrays, addressee/salutation, etc. Writes to Drive output folder with timestamp. | Auto-triggered on Approve, OR can be run independently to regenerate files. | Two CSVs in Drive: `HRI_<CampaignCode>_<Lane>_PRINT_<YYYYMMDD>.csv` + `..._MATCHBACK_<YYYYMMDD>.csv` | Yes — new files have new timestamp; old files preserved. |
+| Load to Salesforce | DEFERRED. Will write Campaign + Campaign_Segment__c + CampaignMember records to SF, populated with post-merge-purge final mailed quantities. | After Faircom returns merge/purge file. Triggered via the merge/purge processor (separate build). | SF Campaign, Campaign_Segment__c (segment-level), CampaignMember (donor-level), Account NCOA address corrections. | Idempotent upsert — re-runs produce same end state. |
+| Refresh Reference Tabs | Regenerates the Logic & Math Reference and Button Reference tabs from the current SPEC.md. | After any spec change is shipped to the build repo. | Both reference tabs rewritten in place. | Yes — re-run. |
+| Download Print File | Direct download link to the Print File CSV from Drive. | When Jessica is preparing to transmit to VeraData / Faircom. | Browser download. | N/A. |
+| Download Matchback File | Direct download link to the Matchback CSV. | Internal HRI use; not transmitted to lettershop. | Browser download. | N/A. |
+
+If new buttons are added to the UI, this table must be updated in the same commit. The reference tab content lives in the spec, not the code — implementation reads SPEC.md §17.2 and renders this table.
+
+### 17.3 Update mechanism
+
+The HTML content for both Reference and Buttons tabs is **static, baked at deploy time** from SPEC.md §17.1 and §17.2. When the spec changes:
+
+1. Architect updates SPEC.md §17.x.
+2. Builder updates the corresponding HTML files in the Apps Script repo.
+3. Builder runs `clasp push` to redeploy the web app.
+4. Header version stamp updates accordingly.
+
+No runtime fetch or refresh button needed. The deploy cycle is the sync cycle. This is simpler than a server-side refresh function and avoids any drift risk between deploys.
+
+If a future need emerges (e.g., HRI wants Bill to edit the reference content without a redeploy), revisit this. For now, deploy-time bake is correct.
+
+---

@@ -13,7 +13,7 @@
 </style>
 
 <h1>HRI Segmentation Builder — Logic &amp; Math Reference</h1>
-<div class="ref-subtitle">Synced from SPEC.md v2026-04-28, deployed 2026-04-28. Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+<div class="ref-subtitle">Synced from SPEC.md v3.3 (2026-04-28). Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
 
 <h2>1. Waterfall Hierarchy</h2>
 <p>Each donor lands in exactly one position. Position priority is top-down — the first match wins.</p>
@@ -23,10 +23,8 @@
 <ul>
   <li><strong>Cornerstone</strong> — OFF removes Cornerstone-flagged donors</li>
   <li><strong>Sustainer (Miracle Partner)</strong> — OFF removes Miracle Partners</li>
-  <li><strong>New Donor</strong> — OFF removes donors in the 90-day welcome window</li>
   <li><strong>Major Gift Portfolio</strong> — OFF removes donors with Staff Manager</li>
-  <li><strong>Mid-Level</strong> — OFF removes the Mid-Level cohort</li>
-  <li><strong>Mid-Level Prospect</strong> — OFF removes the MP cohort</li>
+  <li><strong>Mid-Level</strong> — OFF removes the Mid-Level cohort (24-mo cumulative ≥ $750)</li>
 </ul>
 <p><strong>RFM toggles</strong> (lifecycle position — OFF skips routing, donor falls through):</p>
 <ul>
@@ -35,71 +33,75 @@
   <li><strong>Deep Lapsed</strong> — OFF skips DL assignment</li>
 </ul>
 <p>GROUP OFF removes; RFM OFF skips. This means a Mid-Level donor who is also R1 by RFM will go to ML01 (Mid-Level routing wins at waterfall position 3) regardless of whether Active Housefile is ON or OFF. Cohort identity preserved.</p>
-<p><strong>Nuclear mode</strong> (separate top-level toggle, double-confirmed) forces all GROUP toggles ON and bypasses Tier 2/3 + recent-gift + freq-cap + holdout — but preserves cohort routing and Tier 1 hard suppressions. See SPEC §6.1 for full bypass/preserve table.</p>
+<p><strong>Tier 1.5 New Donor pre-emption (v3.3):</strong> donors with <code>Lifecycle_Stage__c == 'New Donor'</code> are removed above the waterfall — first-match-wins doesn't get to override the welcome stream. The welcome series itself runs as a separate workflow with all GROUP toggles OFF.</p>
+<p><strong>Eliminated in v3.3:</strong> Mid-Level Prospect cohort (sub-$750 active donors now route to AH/LR naturally). New Donor as a waterfall position (promoted to Tier 1.5 above).</p>
+<p><strong>Nuclear mode</strong> (separate top-level toggle, double-confirmed) forces all GROUP toggles ON and bypasses Tier 2 + recent-gift + freq-cap + holdout — but preserves cohort routing and Tier 1 hard suppressions. See SPEC §6.1 for full bypass/preserve table.</p>
 </div>
 <table>
   <thead><tr><th>Pos</th><th>Position Name</th><th>Field / Logic</th><th>Toggle Default</th><th>Notes</th></tr></thead>
   <tbody>
     <tr><td>1</td><td>Global Suppression (Tier 1 hard)</td><td>Always-on suppressions</td><td>Always ON</td><td>See section 2.</td></tr>
+    <tr><td>1.5</td><td>New Donor Welcome pre-emption</td><td><code>Lifecycle_Stage__c</code> = 'New Donor'</td><td>Always ON</td><td>v3.3. Hard pre-emption above the waterfall.</td></tr>
     <tr><td>2</td><td>Major Gift Portfolio</td><td><code>Staff_Manager__c</code> populated</td><td>ON</td><td><strong>GROUP</strong>. OFF removes from universe.</td></tr>
-    <tr><td>3</td><td>Mid-Level</td><td>Cumulative $1k–$5k AND active 24mo</td><td>ON</td><td><strong>GROUP</strong>. OFF removes from universe.</td></tr>
-    <tr><td>4</td><td>Monthly Sustainers</td><td><code>Miracle_Partner__c</code> = TRUE</td><td>OFF</td><td><strong>GROUP</strong>. Default OFF removes Miracle Partners from general appeals.</td></tr>
+    <tr><td>3</td><td>Mid-Level</td><td>24-mo cumulative ≥ $750, no upper cap, active 24mo</td><td>ON</td><td><strong>GROUP</strong>. v3.3 redefinition.</td></tr>
+    <tr><td>4</td><td>Monthly Sustainers</td><td><code>Miracle_Partner__c</code> = TRUE</td><td>OFF</td><td><strong>GROUP</strong>. Default OFF removes Miracle Partners. Wins over Cornerstone.</td></tr>
     <tr><td>5</td><td>Cornerstone Partners</td><td><code>Cornerstone_Partner__c</code> = TRUE</td><td>ON</td><td><strong>GROUP</strong>. OFF removes from universe entirely.</td></tr>
-    <tr><td>6</td><td>New Donor (Welcome)</td><td>Lifecycle = New Donor (90-day window)</td><td>OFF</td><td><strong>GROUP</strong>. Default OFF removes new donors from non-welcome appeals.</td></tr>
-    <tr><td>7</td><td>Active Housefile — High Value</td><td>R1–R2 + F1–F2 + M1–M2</td><td>ON</td><td><strong>RFM</strong>. OFF skips AH assignment; donor stays. Sub-segments AH01–AH03.</td></tr>
-    <tr><td>8</td><td>Active Housefile — Standard</td><td>R2 remaining</td><td>ON</td><td><strong>RFM</strong>. Sub-segments AH04–AH06.</td></tr>
-    <tr><td>9</td><td>Mid-Level Prospect</td><td>Cumulative $500–$999 AND active 24mo</td><td>ON</td><td><strong>GROUP</strong>. MP01.</td></tr>
-    <tr><td>10</td><td>Lapsed Recent</td><td>R3 (13–24mo) + 2+ lifetime gifts</td><td>ON</td><td><strong>RFM</strong>. LR01 (13–18mo), LR02 (19–24mo).</td></tr>
-    <tr><td>11</td><td>Deep Lapsed</td><td>R4–R5 (25–48mo) + cumulative ≥ $10</td><td>ON</td><td><strong>RFM</strong>. DL01–DL04 by recency × monetary.</td></tr>
-    <tr><td>12</td><td>CBNC Flag Override</td><td>Pre-computed CBNC flag</td><td>Always ON</td><td>Catches anyone unassigned by 2–11.</td></tr>
+    <tr><td>6</td><td>Active Housefile — High Value</td><td>R1 + recency × monetary</td><td>ON</td><td><strong>RFM</strong>. OFF skips. Sub-segments AH01–AH03.</td></tr>
+    <tr><td>7</td><td>Active Housefile — Standard</td><td>R2 remaining</td><td>ON</td><td><strong>RFM</strong>. Sub-segments AH04–AH06.</td></tr>
+    <tr><td>8</td><td>Lapsed Recent</td><td>R3 (13–24mo) + 2+ lifetime gifts</td><td>ON</td><td><strong>RFM</strong>. LR01 (13–18mo), LR02 (19–24mo).</td></tr>
+    <tr><td>9</td><td>Deep Lapsed</td><td>R4–R5 (25–48mo) + lifetime cumulative ≥ $10</td><td>ON</td><td><strong>RFM</strong>. DL01–DL04 by recency × lifetime cumulative.</td></tr>
+    <tr><td>10</td><td>CBNC Flag Override</td><td>Pre-computed CBNC flag</td><td>Always ON</td><td>Catches anyone unassigned by 2–9.</td></tr>
   </tbody>
 </table>
 
 <h2>2. Suppression — Tier 1 (hard, always ON)</h2>
+<p style="font-size:12px;color:var(--hri-muted)">v3.3: <code>npsp__Undeliverable_Address__c</code>, <code>NCOA_Deceased_Processing__c</code>, and <code>Primary_Contact_is_Deceased__c</code> removed (Faircom processor handles undeliverable / deceased hygiene; one-contact-deceased was redundant). <code>No_Mail_Code__c</code> moved to Tier 2 always-on toggle.</p>
 <table>
   <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td>All household members deceased</td><td><code>npsp__All_Members_Deceased__c</code></td><td>Single-contact-deceased is Tier 3 (not auto-suppressed).</td></tr>
-    <tr><td>2</td><td>Do Not Contact</td><td><code>Do_Not_Contact__c</code></td><td></td></tr>
-    <tr><td>3</td><td>No Mail Code</td><td><code>No_Mail_Code__c</code></td><td></td></tr>
-    <tr><td>4</td><td>Undeliverable Address</td><td><code>npsp__Undeliverable_Address__c</code></td><td></td></tr>
-    <tr><td>5</td><td>NCOA Deceased</td><td><code>NCOA_Deceased_Processing__c</code></td><td></td></tr>
-    <tr><td>6</td><td>Blank Address</td><td><code>BillingStreet</code> / <code>BillingCity</code> / <code>BillingPostalCode</code></td><td>Any one blank → suppress.</td></tr>
+    <tr><td>1</td><td>All household members deceased</td><td><code>npsp__All_Members_Deceased__c</code></td><td>Only the household-level flag suppresses.</td></tr>
+    <tr><td>2</td><td>Do Not Contact</td><td><code>Do_Not_Contact__c</code></td><td>Explicit donor opt-out.</td></tr>
+    <tr><td>3</td><td>Account Type — DAF / Government</td><td><code>Type</code> ∈ {Donor Advised Fund, Government}</td><td>v3.3. Non-mailable account categories. Defense in depth.</td></tr>
+    <tr><td>4</td><td>Account Record Type — ALM organizations</td><td><code>RecordType.Name</code> ∈ {ALM Foundation Organization, ALM Grants/Partners Household, ALM Grants/Partners Organization}</td><td>v3.3. Defense in depth — current SOQL only pulls Household Account, but explicit suppression travels with the engine.</td></tr>
+    <tr><td>5</td><td>Blank Address</td><td><code>BillingStreet</code> / <code>BillingCity</code> / <code>BillingPostalCode</code></td><td>Any one blank → suppress.</td></tr>
   </tbody>
 </table>
 
-<h2>3. Suppression — Tier 2 (communication preferences, default ON)</h2>
+<h2>2.5 Suppression — Tier 1.5 (New Donor Welcome pre-emption)</h2>
+<p style="font-size:12px;color:var(--hri-muted)">v3.3. Promoted from waterfall GROUP_EXCLUDE to a hard pre-emption above the waterfall. Donors in the 90-day welcome window are removed from any non-welcome appeal regardless of Cornerstone / portfolio / RFM status.</p>
 <table>
-  <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Default</th><th>Conditional Logic</th></tr></thead>
+  <thead><tr><th>Rule</th><th>Field</th><th>Default</th><th>Behavior</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td>Newsletters Only</td><td><code>Newsletters_Only__c</code></td><td>ON</td><td>Suppress for non-newsletter campaigns.</td></tr>
-    <tr><td>2</td><td>Newsletter and Prospectus Only</td><td><code>Newsletter_and_Prospectus_Only__c</code></td><td>ON</td><td>Same — only newsletters / prospectus.</td></tr>
-    <tr><td>3</td><td>No Name Sharing</td><td><code>No_Name_Sharing__c</code></td><td>ON</td><td>Suppress from acquisition campaigns only.</td></tr>
-    <tr><td>4</td><td>Match Only</td><td><code>Match_Only__c</code></td><td>ON</td><td>Suppress from non-matching-gift campaigns.</td></tr>
-    <tr><td>5</td><td>Address Unknown</td><td><code>Address_Unknown__c</code></td><td>ON</td><td>Hard-suppress mail.</td></tr>
-    <tr><td>6</td><td>Not Deliverable</td><td><code>Not_Deliverable__c</code></td><td>ON</td><td>Hard-suppress mail.</td></tr>
+    <tr><td>New Donor Welcome</td><td><code>Lifecycle_Stage__c</code> = 'New Donor'</td><td>ON (suppress)</td><td>The welcome series itself runs via a separate workflow (campaign type = Welcome / Newsletter). Standard appeals never see these donors.</td></tr>
   </tbody>
 </table>
 
-<h2>4. Suppression — Tier 3 (rare/legacy, default OFF)</h2>
+<h2>3. Suppression — Tier 2 (default ON, toggleable per campaign)</h2>
+<p style="font-size:12px;color:var(--hri-muted)">v3.3 changes — see the §6.2.1 SPEC. <code>Newsletter_and_Prospectus_Only__c</code> and <code>No_Name_Sharing__c</code> removed (Bekah consolidating; co-op-only). <code>Address_Unknown__c</code> / <code>Not_Deliverable__c</code> removed (Tier 1 blank-address + NCOA cover them). <code>X1</code> / <code>X2</code> Christmas frequency caps promoted from Tier 3.</p>
 <table>
   <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Default</th><th>Conditional Logic</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td>Primary Contact Deceased</td><td><code>Primary_Contact_is_Deceased__c</code></td><td>OFF</td><td>Some households still mail-eligible via spouse.</td></tr>
-    <tr><td>2</td><td>X1 Mailing Christmas Catalog Only</td><td><code>X1_Mailing_Xmas_Catalog__c</code></td><td>OFF</td><td>Suppress except for Christmas Catalog.</td></tr>
-    <tr><td>3</td><td>X2 Mailings Christmas Appeal Only</td><td><code>X2_Mailings_Xmas_Appeal__c</code></td><td>OFF</td><td>Suppress except for Christmas Appeal.</td></tr>
+    <tr><td>1</td><td>No Mail Code</td><td><code>No_Mail_Code__c</code></td><td>ON (always-on toggle)</td><td>v3.3. Was Tier 1; moved here for rare authorized override (events / cornerstone exceptions).</td></tr>
+    <tr><td>2</td><td>Major Donor In-House</td><td><code>Major_Donor_In_House__c</code> = 'In House'</td><td>ON (always-on toggle)</td><td>v3.3. Renamed from <code>TLC_Donor_Segmentation__c</code>. Suppresses in-house major donors. Toggle OFF only when running an N-prefix in-house-only campaign.</td></tr>
+    <tr><td>3</td><td>Newsletters Only</td><td><code>Newsletters_Only__c</code></td><td>ON</td><td>Campaign-type conditional — INCLUDE when campaign type = Newsletter.</td></tr>
+    <tr><td>4</td><td>Match Only</td><td><code>Match_Only__c</code></td><td>ON</td><td>Campaign-type conditional — INCLUDE only when campaign type = Match.</td></tr>
+    <tr><td>5</td><td>1 Mailing Xmas Catalog</td><td><code>X1_Mailing_Xmas_Catalog__c</code></td><td>ON</td><td>Frequency conditional — donor limited to 1 Christmas mailing per FY.</td></tr>
+    <tr><td>6</td><td>2 Mailings Xmas/Easter</td><td><code>X2_Mailings_Xmas_Appeal__c</code></td><td>ON</td><td>Frequency conditional — 2 mailings per FY (Christmas + Easter).</td></tr>
   </tbody>
 </table>
+
+<h2>4. Tier 3 — DELETED (v3.3)</h2>
+<p style="font-size:12px">14 legacy / rare-use fields no longer used for suppression (Bill 2026-04-28 — too many toggles is not a feature). The two operationally relevant fields here were promoted: <code>X1_Mailing_Xmas_Catalog__c</code> and <code>X2_Mailings_Xmas_Appeal__c</code> → Tier 2 frequency caps.</p>
 
 <h2>5. Segment-Level Suppression Rules</h2>
 <table>
   <thead><tr><th>Rule</th><th>Default</th><th>State</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>Recent-gift suppression</td><td>ON</td><td>Active</td><td>Skip donors who gave in last 21 days.</td></tr>
+    <tr><td>Recent-gift suppression</td><td>OFF</td><td><strong>Spec'd, not built (v3.3)</strong></td><td>Toggle and parameter exist but no code path consumes them. Mail-pull-to-mail-drop timing varies enough that a fixed window is unsafe; implementation deferred until Faircom guidance lands.</td></tr>
     <tr><td>Break-even suppression</td><td>ON</td><td>Active</td><td>Drop segments below break-even response rate.</td></tr>
-    <tr><td>Response-rate floor</td><td>ON</td><td>Active</td><td>Drop segments below configured RR floor.</td></tr>
-    <tr><td>Frequency cap</td><td>ON</td><td>Active</td><td>Skip donors who already received N appeals this FY.</td></tr>
-    <tr><td>5% holdout</td><td>ON</td><td>Active</td><td>Random 5% suppressed-segment holdout for ROI measurement.</td></tr>
+    <tr><td>Response-rate floor</td><td>ON</td><td>Active</td><td>Drop segments below configured RR floor (0.8% default).</td></tr>
+    <tr><td>Frequency cap</td><td>OFF</td><td>Inert (frequency field unpopulated)</td><td>Toggle exists; no-op until upstream populates the FY mailing count.</td></tr>
+    <tr><td>5% holdout</td><td>ON</td><td>Active</td><td>Random 5% suppressed-segment holdout for ROI measurement. Skipped under Nuclear mode.</td></tr>
   </tbody>
 </table>
 
@@ -168,7 +170,7 @@
 <div class="narrative">
 <p><strong>5% holdout:</strong> A random 5% of each campaign's qualified universe is suppressed from the Print file (not mailed) and retained in the Matchback (with <code>Holdout=TRUE</code>) for ROI measurement. The same donor pool is used for control vs. treatment when comparing campaign performance.</p>
 <p><strong>Floor-collapse fallback:</strong> When any tier of the basis-driven ladder falls below the $15 floor, replace the whole ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently. Avoids non-monotonic outputs like <code>15 / 20 / 15</code> for tiny basis values.</p>
-<p><strong>Toggle bucket model (2026-04-28):</strong> GROUP toggles (Cornerstone, Sustainer, New Donor, Major Gift, Mid-Level, Mid-Level Prospect) <em>remove</em> matching donors from the universe entirely when OFF. RFM toggles (Active Housefile, Lapsed, Deep Lapsed) <em>skip</em> the assignment gate when OFF — the donor stays in the universe and may route to other ON positions. So a Mid-Level + R1 donor lands in ML01 even with Active Housefile OFF; cohort identity is preserved. Cornerstone OFF means zero Cornerstone-flagged donors anywhere in the output.</p>
+<p><strong>Toggle bucket model (v3.3):</strong> GROUP toggles (Cornerstone, Sustainer, Major Gift, Mid-Level) <em>remove</em> matching donors from the universe entirely when OFF. RFM toggles (Active Housefile, Lapsed, Deep Lapsed) <em>skip</em> the assignment gate when OFF — the donor stays in the universe and may route to other ON positions. A Mid-Level + R1 donor lands in ML01 even with Active Housefile OFF; cohort identity is preserved. Cornerstone OFF means zero Cornerstone-flagged donors anywhere in the output. New Donor (90-day welcome window) is pre-empted at Tier 1.5 above the waterfall and is not part of the GROUP/RFM toggle set; the welcome series itself runs as a separate workflow.</p>
 </div>
 
 <h2>11. PackageCode Routing</h2>

@@ -34,6 +34,7 @@ BQ_ACCOUNTS_FINAL = f"{GCP_PROJECT}.{BQ_DATASET}.accounts"
 # Account SOQL — all rollup fields + per-FY gift counts for CBNC approximation
 ACCOUNT_SOQL = """
 SELECT Id, Name, Constituent_Id__c, Account_CASESAFEID__c,
+       Type, RecordType.Name,
        First_Name__c, Last_Name__c, Special_Salutation__c,
        npo02__Formal_Greeting__c, npo02__Informal_Greeting__c,
        npo02__LastCloseDate__c, npo02__FirstCloseDate__c,
@@ -50,6 +51,7 @@ SELECT Id, Name, Constituent_Id__c, Account_CASESAFEID__c,
        Number_of_Gifts_4_Fiscal_Years_Ago__c,
        Number_of_Gifts_5_Fiscal_Years_Ago__c,
        Cornerstone_Partner__c, Miracle_Partner__c,
+       Major_Donor_In_House__c,
        npsp__Sustainer__c,
        Staff_Manager__c, Lifecycle_Stage__c,
        BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry,

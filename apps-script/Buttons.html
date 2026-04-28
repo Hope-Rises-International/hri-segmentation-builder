@@ -9,7 +9,7 @@
 </style>
 
 <h1>HRI Segmentation Builder — Button Reference</h1>
-<div class="ref-subtitle">Synced from SPEC.md v2026-04-28, deployed 2026-04-28. Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+<div class="ref-subtitle">Synced from SPEC.md v3.3 (2026-04-28). Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
 
 <table>
   <thead>
@@ -87,10 +87,17 @@
     </tr>
     <tr>
       <td>Bundle additional campaigns (multi-select)</td>
-      <td>Adds a second / third campaign to the run. Cohorts route by prefix: A → housefile / Cornerstone / Sustainer / New Donor; M → Mid-Level / MP; J → Major Gift (J wins if M+J both selected). One Print + one Matchback file pair per campaign.</td>
+      <td>Adds a second / third campaign to the run. Cohorts route by prefix (v3.3): <strong>A</strong> → housefile / Cornerstone / Sustainer; <strong>M</strong> → Mid-Level / Major Gift; <strong>N</strong> → in-house Major Donor (only used when the Major Donor In-House Tier 2 toggle is OFF). One Print + one Matchback file pair per campaign.</td>
       <td>When a single mailing date carries multiple appeal codes (e.g. A2651 housefile + M2651 mid-level).</td>
       <td>Multiple file pairs in Drive — one per selected campaign.</td>
       <td>Yes — uncheck and re-run.</td>
+    </tr>
+    <tr>
+      <td>Major Donor In-House (Tier 2 always-on toggle)</td>
+      <td>Default ON — suppresses donors where <code>Major_Donor_In_House__c</code> = "In House" from any standard mailing. They're managed via portfolio reports, not DM. Toggle OFF only when running an in-house-only mailing — the validator then requires an N-prefix campaign in the selection so the in-house cohort routes to its own file.</td>
+      <td>Default state for every campaign. Flip OFF only for the rare in-house-only blast.</td>
+      <td>Tier 2 suppression entry in the audit log. When OFF, in-house donors land in the N-prefix file.</td>
+      <td>Yes — toggle ON and re-run.</td>
     </tr>
     <tr>
       <td>Nuclear mode (double-confirmed toggle)</td>

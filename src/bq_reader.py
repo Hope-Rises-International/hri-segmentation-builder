@@ -63,6 +63,14 @@ def fetch_accounts_from_bq():
     query = f"SELECT * EXCEPT(_load_timestamp) FROM `{BQ_ACCOUNTS_TABLE}`"
     df = client.query(query).to_dataframe(create_bqstorage_client=False)
 
+    # bq_extract flattens nested SOQL relationships with an underscore
+    # (`RecordType: {Name: ...}` → `RecordType_Name`), but the live-SF
+    # path in salesforce_client.fetch_accounts produces `RecordTypeName`
+    # without the underscore. Normalize to the live-SF name so the
+    # waterfall engine can read either source uniformly.
+    if "RecordType_Name" in df.columns and "RecordTypeName" not in df.columns:
+        df = df.rename(columns={"RecordType_Name": "RecordTypeName"})
+
     elapsed = round(time.time() - t0, 1)
     cbnc_count = df["is_cbnc"].sum() if "is_cbnc" in df.columns else 0
     dm500_count = df["has_dm_gift_500"].sum() if "has_dm_gift_500" in df.columns else 0

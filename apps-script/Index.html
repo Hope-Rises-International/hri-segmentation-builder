@@ -277,9 +277,10 @@
     <p style="font-size:12px;color:var(--hri-muted);margin-bottom:8px">
       Pick a primary campaign, then optionally bundle additional campaigns.
       Cohorts route by campaign prefix:
-      <strong>A</strong> → general housefile / Cornerstone / Sustainer / New Donor;
-      <strong>M</strong> → Mid-Level / Mid-Level Prospect;
-      <strong>J</strong> → Major Gift (J wins if M+J both selected).
+      <strong>A</strong> → general housefile / Cornerstone / Sustainer;
+      <strong>M</strong> → Mid-Level / Major Gift;
+      <strong>N</strong> → in-house Major Donor (only when the
+      <em>Major Donor In-House</em> Tier 2 toggle is OFF).
     </p>
     <select id="campaign-select" onchange="onCampaignSelect()">
       <option value="">Loading campaigns...</option>
@@ -507,25 +508,32 @@
   var nuclearArmed = false;          // Item D — set after double-confirm
 
   // --- Waterfall toggle definitions ---
+  // v3.3 (2026-04-28): mid_level_prospect removed (cohort eliminated);
+  // new_donor removed from waterfall (promoted to Tier 1.5 pre-emption,
+  // always-on above the waterfall — see Reference tab).
   var WATERFALL_TOGGLES = [
     { key: 'major_gift', label: 'Major Gift Portfolio', defaultOn: true },
-    { key: 'mid_level', label: 'Mid-Level', defaultOn: true },
+    { key: 'mid_level', label: 'Mid-Level (24mo ≥ $750)', defaultOn: true },
     { key: 'sustainer', label: 'Sustainers (Miracle Partners)', defaultOn: false },
     { key: 'cornerstone', label: 'Cornerstone Partners', defaultOn: true },
-    { key: 'new_donor', label: 'New Donor (Welcome Window)', defaultOn: false },
     { key: 'active_housefile', label: 'Active Housefile', defaultOn: true },
-    { key: 'mid_level_prospect', label: 'Mid-Level Prospect', defaultOn: true },
     { key: 'lapsed', label: 'Lapsed Recent', defaultOn: true },
     { key: 'deep_lapsed', label: 'Deep Lapsed', defaultOn: true },
   ];
 
+  // v3.3: no_mail_code added (was Tier 1, now Tier 2 always-on toggle).
+  // major_donor_in_house added (renamed from TLC_Donor_Segmentation__c;
+  // OFF requires N-prefix campaign). no_name_sharing dropped (acquisition
+  // co-op only). recent_gift_window kept inert and labeled "(unbuilt)"
+  // until Faircom guidance lands. Tier 3 deleted.
   var SUPPRESSION_TOGGLES = [
-    { key: 'newsletter_only', label: 'Newsletter/Prospectus Only', defaultOn: true },
+    { key: 'no_mail_code', label: 'No Mail Code (Tier 2 always-on)', defaultOn: true },
+    { key: 'major_donor_in_house', label: 'Major Donor In-House (suppress)', defaultOn: true },
+    { key: 'newsletter_only', label: 'Newsletters Only', defaultOn: true },
     { key: 'match_only', label: 'Match Only', defaultOn: true },
-    { key: 'no_name_sharing', label: 'No Name Sharing', defaultOn: true },
     { key: 'xmas_catalog_cap', label: '1 Mailing Xmas Catalog', defaultOn: true },
     { key: 'xmas_easter_cap', label: '2 Mailings Xmas/Easter', defaultOn: true },
-    { key: 'recent_gift_window', label: 'Recent Gift Window (45 days)', defaultOn: false },
+    { key: 'recent_gift_window', label: 'Recent Gift Window (spec\'d, unbuilt)', defaultOn: false },
     { key: 'break_even_floor', label: 'Break-Even Floor', defaultOn: true },
     { key: 'response_rate_floor', label: 'Response Rate Floor (0.8%)', defaultOn: true },
     { key: 'frequency_cap', label: 'Frequency Cap (6/year)', defaultOn: false },
@@ -830,12 +838,13 @@
       inner.innerHTML = '';
       return;
     }
-    // Show only campaigns with prefix A, M, or J (these are the
-    // routing-relevant prefixes per spec). Other prefixes (e.g. R for
-    // legacy renewal codes) wouldn't route correctly under Item C.
+    // v3.3: prefixes are A (housefile / Cornerstone / Sustainer),
+    // M (Mid-Level / Major Gift), and N (in-house Major Donor when the
+    // major_donor_in_house toggle is OFF). J was a misinterpretation —
+    // removed.
     var eligible = campaigns.filter(function(c) {
       var p = (c.appeal_code || '').charAt(0);
-      return p === 'A' || p === 'M' || p === 'J';
+      return p === 'A' || p === 'M' || p === 'N';
     });
     var html = '';
     eligible.forEach(function(c) {
@@ -874,29 +883,28 @@
     }).filter(Boolean);
   }
 
-  // Toggle → required prefix per Item C. Mirrors
-  // src/config.py:TOGGLE_PREFIX_RULES — keep in sync if either changes.
+  // Toggle → required prefix per Item C (v3.3). Mirrors
+  // src/config.py:TOGGLE_PREFIX_RULES — keep in sync.
+  // Removed in v3.3: J prefix (misinterpreted), mid_level_prospect
+  // (cohort eliminated), new_donor (Tier 1.5 pre-emption — never reaches
+  // waterfall, no prefix needed). Major Gift now M-only.
   var TOGGLE_PREFIX = {
-    cornerstone:        'A',
-    sustainer:          'A',
-    new_donor:          'A',
-    active_housefile:   'A',
-    lapsed:             'A',
-    deep_lapsed:        'A',
-    mid_level:          'M',
-    mid_level_prospect: 'M',
-    major_gift:         'MJ',  // M default, J wins if J is selected
+    cornerstone:      'A',
+    sustainer:        'A',
+    active_housefile: 'A',
+    lapsed:           'A',
+    deep_lapsed:      'A',
+    mid_level:        'M',
+    major_gift:       'M',
   };
   var TOGGLE_LABEL = {
-    cornerstone:        'Cornerstone',
-    sustainer:          'Sustainer',
-    new_donor:          'New Donor',
-    active_housefile:   'Active Housefile',
-    lapsed:             'Lapsed',
-    deep_lapsed:        'Deep Lapsed',
-    mid_level:          'Mid-Level',
-    mid_level_prospect: 'Mid-Level Prospect',
-    major_gift:         'Major Gift',
+    cornerstone:      'Cornerstone',
+    sustainer:        'Sustainer',
+    active_housefile: 'Active Housefile',
+    lapsed:           'Lapsed',
+    deep_lapsed:      'Deep Lapsed',
+    mid_level:        'Mid-Level',
+    major_gift:       'Major Gift',
   };
 
   function refreshCampaignValidation() {
@@ -918,21 +926,23 @@
     Object.keys(TOGGLE_PREFIX).forEach(function(tk) {
       if (!toggles[tk]) return;
       var req = TOGGLE_PREFIX[tk];
-      var ok;
-      var label;
-      if (req === 'MJ') {
-        ok = prefixes['M'] || prefixes['J'];
-        label = 'M or J';
-      } else {
-        ok = prefixes[req];
-        label = req;
-      }
-      if (!ok) {
-        errors.push(TOGGLE_LABEL[tk] + ' toggle is ON but no ' + label +
-          '-prefix campaign is in your selection. Add a ' + label +
+      if (!prefixes[req]) {
+        errors.push(TOGGLE_LABEL[tk] + ' toggle is ON but no ' + req +
+          '-prefix campaign is in your selection. Add a ' + req +
           ' campaign or turn ' + TOGGLE_LABEL[tk] + ' OFF.');
       }
     });
+    // v3.3: N-prefix required when Major Donor In-House Tier 2 toggle
+    // is OFF. The toggle defaults ON (suppress); only flipping OFF
+    // means the operator is mailing in-house donors, which routes via
+    // an N-prefix campaign.
+    var inhouseOn = toggles['major_donor_in_house'];
+    if (inhouseOn === undefined) inhouseOn = true;  // safety: default ON
+    if (!inhouseOn && !prefixes['N']) {
+      errors.push('Major Donor In-House suppression is OFF (in-house mailing) ' +
+        'but no N-prefix campaign is in your selection. Add an N campaign or ' +
+        'turn the suppression back ON.');
+    }
     if (errors.length === 0) {
       msg.innerHTML = '<div class="msg msg-success">Campaign selection valid (' +
         sel.map(function(c) { return c.appeal_code; }).join(', ') + ').</div>';
