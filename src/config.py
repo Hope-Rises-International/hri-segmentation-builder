@@ -183,3 +183,130 @@ def fy_label_for_date(d: date) -> str:
         return f"FY{(d.year + 1) % 100:02d}"
     else:
         return f"FY{d.year % 100:02d}"
+
+
+# --- Cohort → Required Campaign Prefix (Bill 2026-04-28, Item C) ---
+# Each segment code maps to the campaign-prefix(es) it accepts. Used for
+# multi-campaign runs to route donors to the correct campaign code.
+#
+#   "A"  — General housefile, Cornerstone, Sustainer, New Donor folds under A
+#   "M"  — Mid-Level / Mid-Level Prospect; never A or J
+#   "MJ" — Major Gift; M default, J wins if a J-prefix campaign is selected
+#
+# The validator uses this list at run-time: for every segment present in
+# the assigned universe, at least one selected campaign must have the
+# required prefix. No A→other auto-fallback.
+COHORT_PREFIX_RULES = {
+    # Housefile / Cornerstone / Sustainer / New Donor / CBNC — A only
+    "AH01": "A", "AH02": "A", "AH03": "A",
+    "AH04": "A", "AH05": "A", "AH06": "A",
+    "LR01": "A", "LR02": "A",
+    "DL01": "A", "DL02": "A", "DL03": "A", "DL04": "A",
+    "CB01": "A",
+    "ND01": "A",
+    "SU01": "A",
+    "CS01": "A", "CS02": "A",
+    # Mid-Level / Mid-Level Prospect — M only
+    "ML01": "M",
+    "MP01": "M",
+    # Major Gift — M default; J wins if a J-prefix campaign is in the
+    # selection. Special-cased in the prefix resolver below.
+    "MJ01": "MJ",
+}
+
+# Toggle → required prefix for UI / pre-run validation. Keyed by toggle
+# key so the validator can be evaluated before the waterfall runs (i.e.
+# from operator toggle state, without yet knowing which segment codes
+# will end up populated). Stays in sync with COHORT_PREFIX_RULES.
+TOGGLE_PREFIX_RULES = {
+    "cornerstone":        "A",
+    "sustainer":          "A",
+    "new_donor":          "A",
+    "active_housefile":   "A",
+    "lapsed":             "A",
+    "deep_lapsed":        "A",
+    "mid_level":          "M",
+    "mid_level_prospect": "M",
+    "major_gift":         "MJ",   # M default, J wins if a J campaign is selected
+}
+
+
+def resolve_campaign_for_segment(segment_code, selected_campaigns):
+    """Pick the campaign whose prefix matches a segment's cohort.
+
+    Args:
+        segment_code: HRI segment (AH01, ML01, MJ01, ...).
+        selected_campaigns: list of dicts with at minimum
+            `appeal_code` (9-char). The first character is the prefix
+            (A, M, J, ...). Order in the list does not matter — Major
+            Gift always prefers J over M when both are present.
+
+    Returns:
+        The matching campaign dict, or None if none match. Caller is
+        responsible for surfacing a validation error in that case.
+
+    Single-campaign back-compat: when only one campaign is selected,
+    return it for every segment. The handoff explicitly preserves the
+    legacy "one campaign, one Print pair" shape — operators who pick
+    a single A2651 don't have to think about prefix routing. Cohort-
+    prefix discipline is enforced via `validate_campaign_selection`
+    upstream, so by the time we reach this resolver in a single-
+    campaign run, the assigned universe is consistent with that one
+    campaign's prefix anyway.
+    """
+    if not selected_campaigns:
+        return None
+    if len(selected_campaigns) == 1:
+        return selected_campaigns[0]
+    required = COHORT_PREFIX_RULES.get(segment_code)
+    if required is None:
+        return None
+    by_prefix = {c.get("appeal_code", "")[:1]: c for c in selected_campaigns}
+    if required == "MJ":
+        # Major Gift: prefer J, fall back to M.
+        return by_prefix.get("J") or by_prefix.get("M")
+    return by_prefix.get(required)
+
+
+def validate_campaign_selection(toggles, selected_campaigns):
+    """Validate that every ON cohort has a matching campaign prefix.
+
+    Returns:
+        list of error strings. Empty list means valid.
+
+    Errors are operator-facing — the message names the toggle and the
+    missing prefix so the operator knows whether to add a campaign or
+    flip the toggle off.
+    """
+    errors = []
+    if not selected_campaigns:
+        errors.append("No campaign selected. Pick at least one campaign.")
+        return errors
+    selected_prefixes = {c.get("appeal_code", "")[:1] for c in selected_campaigns}
+    label_for = {
+        "cornerstone":        "Cornerstone",
+        "sustainer":          "Sustainer",
+        "new_donor":          "New Donor",
+        "active_housefile":   "Active Housefile",
+        "lapsed":             "Lapsed",
+        "deep_lapsed":        "Deep Lapsed",
+        "mid_level":          "Mid-Level",
+        "mid_level_prospect": "Mid-Level Prospect",
+        "major_gift":         "Major Gift",
+    }
+    for tk, required in TOGGLE_PREFIX_RULES.items():
+        if not toggles.get(tk, DEFAULT_TOGGLES.get(tk, False)):
+            continue
+        if required == "MJ":
+            ok = ("M" in selected_prefixes) or ("J" in selected_prefixes)
+            label = "M or J"
+        else:
+            ok = required in selected_prefixes
+            label = required
+        if not ok:
+            errors.append(
+                f"{label_for[tk]} toggle is ON but no {label}-prefix campaign "
+                f"is in your selection. Add a {label} campaign or turn "
+                f"{label_for[tk]} OFF."
+            )
+    return errors

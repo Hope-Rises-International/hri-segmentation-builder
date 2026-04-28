@@ -9,7 +9,7 @@
 </style>
 
 <h1>HRI Segmentation Builder — Button Reference</h1>
-<div class="ref-subtitle">Synced from SPEC.md v2026-04-27, deployed 2026-04-27. Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+<div class="ref-subtitle">Synced from SPEC.md v2026-04-28, deployed 2026-04-28. Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
 
 <table>
   <thead>
@@ -84,6 +84,20 @@
       <td>Internal HRI use.</td>
       <td>Browser download.</td>
       <td>N/A.</td>
+    </tr>
+    <tr>
+      <td>Bundle additional campaigns (multi-select)</td>
+      <td>Adds a second / third campaign to the run. Cohorts route by prefix: A → housefile / Cornerstone / Sustainer / New Donor; M → Mid-Level / MP; J → Major Gift (J wins if M+J both selected). One Print + one Matchback file pair per campaign.</td>
+      <td>When a single mailing date carries multiple appeal codes (e.g. A2651 housefile + M2651 mid-level).</td>
+      <td>Multiple file pairs in Drive — one per selected campaign.</td>
+      <td>Yes — uncheck and re-run.</td>
+    </tr>
+    <tr>
+      <td>Nuclear mode (double-confirmed toggle)</td>
+      <td>Forces all GROUP toggles ON, bypasses Tier 2/3 + recent-gift + freq cap + holdout. Tier 1 hard suppressions still apply. Cohort routing preserved. Cohort-prefix validation still runs. Auto-resets to OFF after a successful run.</td>
+      <td>Emergency appeals or full-housefile blasts only — operator must type "NUCLEAR" to activate.</td>
+      <td>Standard outputs + a separate <code>nuclear_run_&lt;campaign&gt;_&lt;TS&gt;.log</code> file in the Drive output folder.</td>
+      <td>Per-run only — toggle resets after each Approve.</td>
     </tr>
   </tbody>
 </table>

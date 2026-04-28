@@ -13,24 +13,44 @@
 </style>
 
 <h1>HRI Segmentation Builder — Logic &amp; Math Reference</h1>
-<div class="ref-subtitle">Synced from SPEC.md v2026-04-27, deployed 2026-04-27. Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+<div class="ref-subtitle">Synced from SPEC.md v2026-04-28, deployed 2026-04-28. Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
 
 <h2>1. Waterfall Hierarchy</h2>
-<p>Each donor lands in exactly one position. Position priority is top-down — the first match wins. Toggle OFF on any toggleable position <strong>removes matching donors from the universe entirely</strong>; they do not fall through to a lower position.</p>
+<p>Each donor lands in exactly one position. Position priority is top-down — the first match wins.</p>
+<div class="narrative">
+<p>Toggles fall into two semantic buckets:</p>
+<p><strong>GROUP toggles</strong> (cohort identity — OFF removes those donors entirely):</p>
+<ul>
+  <li><strong>Cornerstone</strong> — OFF removes Cornerstone-flagged donors</li>
+  <li><strong>Sustainer (Miracle Partner)</strong> — OFF removes Miracle Partners</li>
+  <li><strong>New Donor</strong> — OFF removes donors in the 90-day welcome window</li>
+  <li><strong>Major Gift Portfolio</strong> — OFF removes donors with Staff Manager</li>
+  <li><strong>Mid-Level</strong> — OFF removes the Mid-Level cohort</li>
+  <li><strong>Mid-Level Prospect</strong> — OFF removes the MP cohort</li>
+</ul>
+<p><strong>RFM toggles</strong> (lifecycle position — OFF skips routing, donor falls through):</p>
+<ul>
+  <li><strong>Active Housefile</strong> — OFF skips AH assignment; R1+R2 donors stay in universe and may route to other ON positions</li>
+  <li><strong>Lapsed</strong> — OFF skips LR assignment</li>
+  <li><strong>Deep Lapsed</strong> — OFF skips DL assignment</li>
+</ul>
+<p>GROUP OFF removes; RFM OFF skips. This means a Mid-Level donor who is also R1 by RFM will go to ML01 (Mid-Level routing wins at waterfall position 3) regardless of whether Active Housefile is ON or OFF. Cohort identity preserved.</p>
+<p><strong>Nuclear mode</strong> (separate top-level toggle, double-confirmed) forces all GROUP toggles ON and bypasses Tier 2/3 + recent-gift + freq-cap + holdout — but preserves cohort routing and Tier 1 hard suppressions. See SPEC §6.1 for full bypass/preserve table.</p>
+</div>
 <table>
   <thead><tr><th>Pos</th><th>Position Name</th><th>Field / Logic</th><th>Toggle Default</th><th>Notes</th></tr></thead>
   <tbody>
     <tr><td>1</td><td>Global Suppression (Tier 1 hard)</td><td>Always-on suppressions</td><td>Always ON</td><td>See section 2.</td></tr>
-    <tr><td>2</td><td>Major Gift Portfolio</td><td><code>Staff_Manager__c</code> populated</td><td>ON</td><td>Toggle OFF excludes from universe.</td></tr>
-    <tr><td>3</td><td>Mid-Level</td><td>Cumulative $1k–$5k AND active 24mo</td><td>ON</td><td>Toggle OFF excludes from universe.</td></tr>
-    <tr><td>4</td><td>Monthly Sustainers</td><td><code>Miracle_Partner__c</code> = TRUE</td><td>OFF</td><td>Default OFF excludes Miracle Partners from general appeals.</td></tr>
-    <tr><td>5</td><td>Cornerstone Partners</td><td><code>Cornerstone_Partner__c</code> = TRUE</td><td>ON</td><td>Toggle OFF excludes from universe entirely.</td></tr>
-    <tr><td>6</td><td>New Donor (Welcome)</td><td>Lifecycle = New Donor (90-day window)</td><td>OFF</td><td>Default OFF excludes new donors from non-welcome appeals.</td></tr>
-    <tr><td>7</td><td>Active Housefile — High Value</td><td>R1–R2 + F1–F2 + M1–M2</td><td>ON</td><td>Sub-segments AH01–AH03 by recency × monetary.</td></tr>
-    <tr><td>8</td><td>Active Housefile — Standard</td><td>R2 remaining</td><td>ON</td><td>Sub-segments AH04–AH06.</td></tr>
-    <tr><td>9</td><td>Mid-Level Prospect</td><td>Cumulative $500–$999 AND active 24mo</td><td>ON</td><td>MP01.</td></tr>
-    <tr><td>10</td><td>Lapsed Recent</td><td>R3 (13–24mo) + 2+ lifetime gifts</td><td>ON</td><td>LR01 (13–18mo), LR02 (19–24mo).</td></tr>
-    <tr><td>11</td><td>Deep Lapsed</td><td>R4–R5 (25–48mo) + cumulative ≥ $10</td><td>ON</td><td>DL01–DL04 by recency × monetary.</td></tr>
+    <tr><td>2</td><td>Major Gift Portfolio</td><td><code>Staff_Manager__c</code> populated</td><td>ON</td><td><strong>GROUP</strong>. OFF removes from universe.</td></tr>
+    <tr><td>3</td><td>Mid-Level</td><td>Cumulative $1k–$5k AND active 24mo</td><td>ON</td><td><strong>GROUP</strong>. OFF removes from universe.</td></tr>
+    <tr><td>4</td><td>Monthly Sustainers</td><td><code>Miracle_Partner__c</code> = TRUE</td><td>OFF</td><td><strong>GROUP</strong>. Default OFF removes Miracle Partners from general appeals.</td></tr>
+    <tr><td>5</td><td>Cornerstone Partners</td><td><code>Cornerstone_Partner__c</code> = TRUE</td><td>ON</td><td><strong>GROUP</strong>. OFF removes from universe entirely.</td></tr>
+    <tr><td>6</td><td>New Donor (Welcome)</td><td>Lifecycle = New Donor (90-day window)</td><td>OFF</td><td><strong>GROUP</strong>. Default OFF removes new donors from non-welcome appeals.</td></tr>
+    <tr><td>7</td><td>Active Housefile — High Value</td><td>R1–R2 + F1–F2 + M1–M2</td><td>ON</td><td><strong>RFM</strong>. OFF skips AH assignment; donor stays. Sub-segments AH01–AH03.</td></tr>
+    <tr><td>8</td><td>Active Housefile — Standard</td><td>R2 remaining</td><td>ON</td><td><strong>RFM</strong>. Sub-segments AH04–AH06.</td></tr>
+    <tr><td>9</td><td>Mid-Level Prospect</td><td>Cumulative $500–$999 AND active 24mo</td><td>ON</td><td><strong>GROUP</strong>. MP01.</td></tr>
+    <tr><td>10</td><td>Lapsed Recent</td><td>R3 (13–24mo) + 2+ lifetime gifts</td><td>ON</td><td><strong>RFM</strong>. LR01 (13–18mo), LR02 (19–24mo).</td></tr>
+    <tr><td>11</td><td>Deep Lapsed</td><td>R4–R5 (25–48mo) + cumulative ≥ $10</td><td>ON</td><td><strong>RFM</strong>. DL01–DL04 by recency × monetary.</td></tr>
     <tr><td>12</td><td>CBNC Flag Override</td><td>Pre-computed CBNC flag</td><td>Always ON</td><td>Catches anyone unassigned by 2–11.</td></tr>
   </tbody>
 </table>
@@ -94,7 +114,7 @@
 <p><strong>Ladder formula:</strong> AskAmount1 = basis × 1.0,  AskAmount2 = basis × 1.5,  AskAmount3 = basis × 2.0.</p>
 <p><strong>Rounding:</strong> UP to nearest $5 below $100, UP to nearest $25 at/above $100. Never round down.</p>
 <p><strong>Floor / Ceiling:</strong> Floor = $15. Ceiling = $4,975 (rounded down to a $25 increment).</p>
-<p><strong>Floor-collapse fallback (2026-04-27):</strong> If <em>any</em> raw tier (basis × multiplier) is below the $15 floor, replace the WHOLE ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently — that produced non-monotonic ladders like <code>15 / 20 / 15</code>. Fallback values configurable per campaign via the Segment Rules tab.</p>
+<p><strong>Floor-collapse fallback (2026-04-27):</strong> If <em>any</em> raw tier (basis × multiplier) is below the $15 floor, replace the WHOLE ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently — that produced non-monotonic ladders like <code>15 / 20 / 15</code>. Fallback ladder values ($15 / $25 / $35) live in <code>src/config.py</code> constants. Editing requires a redeploy.</p>
 <p><strong>Mid-Level / Major:</strong> ML*, MJ*, MP*, CS01, SU01 segments must always populate AskAmount1/2/3. The lettershop template controls whether the asks render on the printed reply device — builder always supplies the values.</p>
 <p><strong>AskAmountLabel:</strong> ALWAYS BLANK in the CSV. The "Best Gift of $___" line is a donor fill-in; the lettershop renders the static label and HRI does not anchor it.</p>
 </div>
@@ -148,7 +168,7 @@
 <div class="narrative">
 <p><strong>5% holdout:</strong> A random 5% of each campaign's qualified universe is suppressed from the Print file (not mailed) and retained in the Matchback (with <code>Holdout=TRUE</code>) for ROI measurement. The same donor pool is used for control vs. treatment when comparing campaign performance.</p>
 <p><strong>Floor-collapse fallback:</strong> When any tier of the basis-driven ladder falls below the $15 floor, replace the whole ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently. Avoids non-monotonic outputs like <code>15 / 20 / 15</code> for tiny basis values.</p>
-<p><strong>Toggle exclude:</strong> Toggling a waterfall position OFF removes matching donors from the universe entirely <em>before</em> waterfall assignment runs. They do not fall through to a lower position. Cornerstone OFF means zero Cornerstone-flagged donors anywhere in the output.</p>
+<p><strong>Toggle bucket model (2026-04-28):</strong> GROUP toggles (Cornerstone, Sustainer, New Donor, Major Gift, Mid-Level, Mid-Level Prospect) <em>remove</em> matching donors from the universe entirely when OFF. RFM toggles (Active Housefile, Lapsed, Deep Lapsed) <em>skip</em> the assignment gate when OFF — the donor stays in the universe and may route to other ON positions. So a Mid-Level + R1 donor lands in ML01 even with Active Housefile OFF; cohort identity is preserved. Cornerstone OFF means zero Cornerstone-flagged donors anywhere in the output.</p>
 </div>
 
 <h2>11. PackageCode Routing</h2>
@@ -167,7 +187,7 @@
     <tr><td>New Donor (ND*)</td><td>P01</td><td></td></tr>
   </tbody>
 </table>
-<p>Per-segment overrides live in the MIC <code>Segment Rules</code> tab; the table above is the default ladder. Lettershop sorts on PackageCode to route creative.</p>
+<p>PackageCode mapping per segment group from <code>src/config.py</code>; the table above is the default ladder. Lettershop sorts on PackageCode to route creative.</p>
 
 <h2>12. Output File Columns — Print</h2>
 <table>

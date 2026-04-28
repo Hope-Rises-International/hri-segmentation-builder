@@ -3,18 +3,27 @@
 Assigns each account to exactly one segment via priority hierarchy.
 Mutually exclusive — once assigned at an active position, excluded from all subsequent.
 
+Toggles fall into two semantic buckets (Bill 2026-04-28):
+
+ GROUP toggles (cohort identity — OFF removes donor from universe):
+   cornerstone, sustainer, new_donor, major_gift, mid_level, mid_level_prospect.
+
+ RFM toggles (lifecycle position — OFF skips the assignment gate; donor
+ stays in universe and may route to other ON positions):
+   active_housefile, lapsed, deep_lapsed.
+
 Waterfall positions:
  1. Global Suppression (Tier 1 hard — always active, not toggleable)
- 2. Major Gift Portfolio [toggle-gated]
- 3. Mid-Level [toggle-gated]
- 4. Monthly Sustainers [toggle-gated, default OFF]
- 5. Cornerstone Partners [toggle-gated]
- 6. New Donor [toggle-gated, default OFF]
- 7. Active Housefile — High Value (R1-R2, F1-F2, M1-M2) [toggle-gated]
- 8. Active Housefile — Standard (R1-R2, remaining) [toggle-gated]
- 9. Mid-Level Prospect [toggle-gated]
-10. Lapsed Recent (R3: 13-24 months) [toggle-gated]
-11. Deep Lapsed (R4-R5: 25-48 months) [toggle-gated]
+ 2. Major Gift Portfolio [GROUP — Item D Nuclear can force ON]
+ 3. Mid-Level [GROUP]
+ 4. Monthly Sustainers [GROUP, default OFF]
+ 5. Cornerstone Partners [GROUP]
+ 6. New Donor [GROUP, default OFF]
+ 7. Active Housefile — High Value (R1-R2, F1-F2, M1-M2) [RFM — OFF skips]
+ 8. Active Housefile — Standard (R1-R2, remaining) [RFM]
+ 9. Mid-Level Prospect [GROUP]
+10. Lapsed Recent (R3: 13-24 months) [RFM]
+11. Deep Lapsed (R4-R5: 25-48 months) [RFM]
 12. CBNC Flag Override (always active, not toggleable)
 """
 
@@ -158,27 +167,32 @@ def run_waterfall(
     logger.info(f"  --- Total Tier 1 suppressed: {suppressed_count:,} ---")
 
     # ===================================================================
-    # Toggle-Exclude Pass (Bill 2026-04-27, SPEC §6.1)
-    # OFF toggle removes matching donors from the universe entirely
-    # rather than letting them fall through to the next active position.
-    # "Cornerstone OFF" means zero Cornerstone-flagged donors anywhere
-    # in the output, not "skip CS01 and let them land in AH01/ML01/etc."
+    # GROUP_EXCLUDE pass (Bill 2026-04-28, SPEC §6.1 bucket split)
     #
-    # Single table-driven loop — every toggleable waterfall position
-    # goes through the same code path. The mask-builder is a closure
-    # that captures the prepared frames (accts, cumulative, etc.).
-    # No per-position branches. To add a new toggle, add one row to
-    # TOGGLE_EXCLUDE_RULES; nothing else needs to change.
+    # Toggles split into two semantic buckets:
+    #
+    #   GROUP toggles (cohort identity — OFF removes donor entirely):
+    #     cornerstone, sustainer, new_donor, major_gift,
+    #     mid_level, mid_level_prospect.
+    #
+    #   RFM toggles (lifecycle position — OFF just skips the assignment
+    #   gate; donor stays in universe and may route to other ON positions):
+    #     active_housefile, lapsed, deep_lapsed. Implemented by the
+    #     `if toggles.get(...):` blocks at positions 7-8, 10, 11 below.
+    #
+    # GROUP OFF removes; RFM OFF skips. A Mid-Level donor who is also
+    # R1 still routes to ML01 (waterfall position 3 wins) regardless of
+    # active_housefile state — cohort identity is preserved.
     # ===================================================================
     total_gifts_pre = pd.to_numeric(accts["npo02__NumberOfClosedOpps__c"], errors="coerce").fillna(0)
     staff_mgr = accts.get("Staff_Manager__c", pd.Series(None, index=accts.index))
 
-    # (toggle_key, default_on, position_label, mask_builder)
-    # Each mask_builder is a thunk that returns a boolean Series the
-    # same length as accts. Identical to the corresponding waterfall
-    # position's _assign criteria, so toggle-OFF removes exactly the
-    # donors who would otherwise have been assigned to that position.
-    TOGGLE_EXCLUDE_RULES = [
+    # (toggle_key, default_on, label, mask_builder).
+    # Each mask_builder is a thunk returning a boolean Series the same
+    # length as accts — identical to the cohort's `_assign` criteria so
+    # toggle-OFF removes exactly the donors who would otherwise have
+    # been assigned to that cohort.
+    GROUP_EXCLUDE_RULES = [
         ("major_gift",         True,  "Major Gift Portfolio",
          lambda: staff_mgr.notna() & (staff_mgr != "")),
         ("mid_level",          True,  "Mid-Level",
@@ -190,26 +204,19 @@ def run_waterfall(
          lambda: accts.get("Cornerstone_Partner__c", pd.Series(False, index=accts.index)) == True),
         ("new_donor",          False, "New Donor",
          lambda: accts["lifecycle_stage"] == "New Donor"),
-        ("active_housefile",   True,  "Active Housefile",
-         lambda: accts["R_bucket"].isin(["R1", "R2"])),
         ("mid_level_prospect", True,  "Mid-Level Prospect",
          lambda: (cumulative >= MID_LEVEL_PROSPECT_MIN)
                  & (cumulative <= MID_LEVEL_PROSPECT_MAX)
                  & (months_since_last <= MID_LEVEL_ACTIVE_MONTHS)),
-        ("lapsed",             True,  "Lapsed Recent",
-         lambda: (accts["R_bucket"] == "R3") & (total_gifts_pre >= 2)),
-        ("deep_lapsed",        True,  "Deep Lapsed",
-         lambda: accts["R_bucket"].isin(["R4", "R5"])
-                 & (cumulative >= 10) & (months_since_last <= 48)),
     ]
 
-    for toggle_key, default_on, label, mask_fn in TOGGLE_EXCLUDE_RULES:
+    for toggle_key, default_on, label, mask_fn in GROUP_EXCLUDE_RULES:
         if toggles.get(toggle_key, default_on):
             continue
-        _suppress(mask_fn(), f"Toggle Exclude: {label}")
+        _suppress(mask_fn(), f"Group Exclude: {label}")
 
-    toggle_excluded = (suppression_reason.str.startswith("Toggle Exclude:")).sum()
-    logger.info(f"  --- Toggle-exclude removed: {toggle_excluded:,} ---")
+    group_excluded = (suppression_reason.str.startswith("Group Exclude:")).sum()
+    logger.info(f"  --- Group-exclude removed: {group_excluded:,} ---")
 
     # ===================================================================
     # Position 2: MAJOR GIFT PORTFOLIO [toggle-gated]

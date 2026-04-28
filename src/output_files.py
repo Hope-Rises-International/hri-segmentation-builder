@@ -164,10 +164,22 @@ def generate_output_files(
     lane="Housefile",
     holdout_pct=0.0,
     holdout_seed=42,
+    selected_campaigns=None,
 ):
     """Generate all output files via vectorized pandas operations.
 
     No per-row iteration. All joins via merge/map.
+
+    Multi-campaign mode (Item C, 2026-04-28): when
+    `selected_campaigns` is supplied, the master DataFrame is split by
+    the donor's campaign code (already attached upstream by
+    appeal_codes.generate_appeal_codes) and one Print + one Matchback
+    pair is emitted per campaign. The caller still receives the
+    aggregate `printer_csv`/`matchback_csv` (concat of all campaigns)
+    plus a `per_campaign` map keyed by campaign code so the writer
+    can upload one pair per campaign with the correct filename prefix.
+
+    Single-campaign mode (default): unchanged from prior behavior.
     """
     import time
     t0 = time.time()
@@ -301,6 +313,20 @@ def generate_output_files(
 
     logger.info(f"  Master DataFrame built: {len(master):,} rows in {time.time() - t0:.1f}s")
 
+    # --- Per-donor campaign tag (multi-campaign routing — Item C) ---
+    # `campaign_appeal_code_full` was attached by appeal_codes when a
+    # multi-campaign run was requested. In single-campaign runs the
+    # column may be missing or uniform; we derive the tag from the
+    # CampaignAppealCode 9-char prefix (positions 1-5) as a fallback so
+    # legacy single-campaign callers don't have to thread it through.
+    if "campaign_appeal_code_full" in master.columns:
+        campaign_tag = master["campaign_appeal_code_full"].fillna("").astype(str)
+    else:
+        campaign_tag = pd.Series("", index=master.index)
+    fallback_tag = master["CampaignAppealCode"].fillna("").astype(str).str[:5]
+    campaign_tag = campaign_tag.where(campaign_tag != "", fallback_tag)
+    master["_campaign_tag"] = campaign_tag
+
     # --- Printer File: clean, non-holdout records only ---
     printer_mask = (~master["_is_excluded"]) & (~master["Holdout"])
     printer_df = master.loc[printer_mask, PRINTER_COLUMNS].copy()
@@ -337,6 +363,46 @@ def generate_output_files(
     matchback_csv   = matchback_df.to_csv(index=False,   quoting=csv.QUOTE_NONNUMERIC)
     exceptions_csv  = (exceptions_df.to_csv(index=False, quoting=csv.QUOTE_NONNUMERIC)
                        if len(exceptions_df) > 0 else "")
+
+    # --- Per-campaign split (Item C, 2026-04-28) ---
+    # When a multi-campaign run has been requested, slice the master by
+    # the `_campaign_tag` column and emit one Print + one Matchback CSV
+    # per campaign so the writer can upload them as separate files. In
+    # single-campaign runs `selected_campaigns` is None and we emit a
+    # single entry keyed on the campaign_code argument so callers have
+    # a uniform shape regardless of mode.
+    per_campaign = {}
+    if selected_campaigns:
+        for c in selected_campaigns:
+            ac = (c.get("appeal_code") or "")
+            if not ac:
+                continue
+            prefix = ac[:5]
+            sub_printer_mask = printer_mask & (master["_campaign_tag"].isin([ac, prefix]))
+            sub_match_mask   = matchback_mask & (master["_campaign_tag"].isin([ac, prefix]))
+            sub_printer_df   = master.loc[sub_printer_mask, PRINTER_COLUMNS].copy()
+            sub_match_df     = master.loc[sub_match_mask,   MATCHBACK_COLUMNS].copy()
+            per_campaign[ac] = {
+                "appeal_code":      ac,
+                "printer_df":       sub_printer_df,
+                "matchback_df":     sub_match_df,
+                "printer_count":    len(sub_printer_df),
+                "matchback_count":  len(sub_match_df),
+                "printer_csv":      sub_printer_df.to_csv(index=False, quoting=csv.QUOTE_NONNUMERIC),
+                "matchback_csv":    sub_match_df.to_csv(index=False, quoting=csv.QUOTE_NONNUMERIC),
+            }
+            logger.info(f"  Per-campaign [{ac}]: printer={len(sub_printer_df):,}, "
+                        f"matchback={len(sub_match_df):,}")
+    else:
+        per_campaign[campaign_code] = {
+            "appeal_code":      campaign_code,
+            "printer_df":       printer_df,
+            "matchback_df":     matchback_df,
+            "printer_count":    len(printer_df),
+            "matchback_count":  len(matchback_df),
+            "printer_csv":      printer_csv,
+            "matchback_csv":    matchback_csv,
+        }
 
     logger.info(f"  Printer File: {len(printer_df):,} rows")
     logger.info(f"  Matchback File: {len(matchback_df):,} rows")
@@ -384,4 +450,5 @@ def generate_output_files(
         "printer_df": printer_df,
         "matchback_df": matchback_df,
         "exceptions_df": exceptions_df,
+        "per_campaign": per_campaign,
     }

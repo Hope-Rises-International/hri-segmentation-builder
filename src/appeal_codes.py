@@ -24,7 +24,10 @@ import logging
 import pandas as pd
 import numpy as np
 
-from config import SEGMENT_CODES, fy_label_for_date, get_package_code
+from config import (
+    SEGMENT_CODES, fy_label_for_date, get_package_code,
+    resolve_campaign_for_segment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,23 +92,44 @@ PROGRAM_BY_PREFIX = {
 def generate_appeal_codes(
     waterfall_result: pd.DataFrame,
     accounts_df: pd.DataFrame,
-    campaign_appeal_code: str,
+    campaign_appeal_code: str = None,
     campaign_fy: str = "",
     campaign_month: str = "",
     is_ca_version_campaign: bool = False,
     test_flag: str = "CTL",
     package_overrides: dict = None,
+    selected_campaigns: list = None,
 ) -> pd.DataFrame:
     """Generate 9-char and 15-char appeal codes + scanline for all assigned donors.
+
+    Two modes (Item C, 2026-04-28):
+
+      Single-campaign (legacy): pass `campaign_appeal_code` only. Every
+      donor gets that campaign's prefix. Behavior unchanged from before
+      Item C.
+
+      Multi-campaign: pass `selected_campaigns` (list of dicts with
+      `appeal_code` and optionally `fy`/`month`). Each donor's cohort
+      determines which campaign's prefix wins per
+      `config.COHORT_PREFIX_RULES`. Validation must run before calling
+      this — donors whose cohort has no matching campaign in the
+      selection raise; that should have been surfaced upstream.
 
     Args:
         waterfall_result: Waterfall output with segment assignments.
         accounts_df: Account data with Constituent_Id__c and BillingState.
-        campaign_appeal_code: 9-char appeal code from MIC (TYYMCPSS0 format).
+        campaign_appeal_code: 9-char appeal code from MIC (TYYMCPSS0
+            format). Required for single-campaign mode.
         campaign_fy: Fiscal year (e.g., "26"). Auto-derived if empty.
-        campaign_month: Campaign month code (e.g., "05" for May). Auto-derived if empty.
-        is_ca_version_campaign: Whether this is a 33x Shipping match (CA versioning).
+        campaign_month: Campaign month code (e.g., "05" for May).
+            Auto-derived if empty.
+        is_ca_version_campaign: Whether this is a 33x Shipping match
+            (CA versioning).
         test_flag: Test/control flag (CTL, TSA, TSB).
+        selected_campaigns: list of campaign dicts for multi-campaign
+            mode. Each dict must have `appeal_code`. Optional `fy` and
+            `month`/`campaign_month` override what's derived from the
+            code.
 
     Returns:
         DataFrame with account_id, appeal_code_9, appeal_code_15, scanline,
@@ -115,11 +139,39 @@ def generate_appeal_codes(
     if "Id" in accts.columns:
         accts = accts.set_index("Id")
 
-    # Parse FY and campaign month from appeal code if not provided
-    if not campaign_fy and len(campaign_appeal_code) >= 3:
-        campaign_fy = campaign_appeal_code[1:3]
-    if not campaign_month and len(campaign_appeal_code) >= 5:
-        campaign_month = campaign_appeal_code[3:5]
+    multi_mode = bool(selected_campaigns)
+    if not multi_mode:
+        # Single-campaign legacy path: synthesize a one-element list so
+        # the resolver returns this campaign for every donor regardless
+        # of cohort.
+        if not campaign_appeal_code:
+            raise ValueError("Pass either campaign_appeal_code or selected_campaigns")
+        selected_campaigns = [{
+            "appeal_code": campaign_appeal_code,
+            "fy": campaign_fy,
+            "month": campaign_month,
+        }]
+
+    # Cache (fy, month, prefix5) per campaign so we don't reparse for
+    # every donor.
+    campaign_meta_by_code = {}
+    for c in selected_campaigns:
+        ac = c.get("appeal_code", "") or ""
+        if not ac:
+            continue
+        fy = c.get("fy") or (ac[1:3] if len(ac) >= 3 else "")
+        month = c.get("month") or c.get("campaign_month") or (ac[3:5] if len(ac) >= 5 else "")
+        prefix5 = ac[:5].ljust(5, "0")
+        campaign_meta_by_code[ac] = {"fy": fy, "month": month, "prefix5": prefix5}
+
+    # In single-campaign mode, derive defaults from the code for the
+    # legacy parameters too — keeps the rest of the body unchanged.
+    if not multi_mode:
+        meta = campaign_meta_by_code.get(campaign_appeal_code or "", {})
+        if not campaign_fy:
+            campaign_fy = meta.get("fy", "")
+        if not campaign_month:
+            campaign_month = meta.get("month", "")
 
     # Include quantity_reduced records (they go to Matchback) but not budget_trimmed
     # (pass-2 trim or operator exclude — those are dropped entirely)
@@ -135,19 +187,38 @@ def generate_appeal_codes(
         assigned["quantity_reduced"] = False
 
     results = []
+    unmatched_segments = set()  # for post-loop diagnostics
     for _, row in assigned.iterrows():
         acct_id = row["account_id"]
         seg_code = row["segment_code"]
+
+        # Pick the campaign whose prefix matches this donor's cohort.
+        # In single-campaign mode the resolver gracefully returns the
+        # one campaign because COHORT_PREFIX_RULES['<seg>'] still
+        # matches its prefix (or, for an exotic test code, falls back
+        # to that single campaign). In multi-campaign mode, this is
+        # how routing happens — no donor splitting later, every donor
+        # already has the right campaign attached.
+        donor_campaign = resolve_campaign_for_segment(seg_code, selected_campaigns)
+        if donor_campaign is None:
+            # Should have been caught by validate_campaign_selection
+            # upstream. Skip the donor and record the segment for the
+            # post-loop diagnostic; better than emitting a corrupt code.
+            unmatched_segments.add(seg_code)
+            continue
+
+        donor_appeal = donor_campaign.get("appeal_code", "") or ""
+        meta = campaign_meta_by_code.get(donor_appeal, {})
+        donor_prefix5 = meta.get("prefix5", donor_appeal[:5].ljust(5, "0"))
+        donor_fy = meta.get("fy", "")
+        donor_month = meta.get("month", "")
 
         # 9-char appeal code: <CampaignPrefix:5><SegmentCode:4>.
         # Positions 1-5 are campaign-level (e.g. "A2651"); positions 6-9
         # are the HRI segment (AH01, CS01, etc) so Aegis can attribute
         # returned gifts to a segment from the scanline alone, without
-        # joining to Matchback. Spec §9 calls for segment in pos 6-9 —
-        # earlier implementation zero-padded as "A26510000" and dropped
-        # the segment signal.
-        campaign_prefix_5 = (campaign_appeal_code or "")[:5].ljust(5, "0")
-        appeal_9 = f"{campaign_prefix_5}{seg_code}"
+        # joining to Matchback. Spec §9 calls for segment in pos 6-9.
+        appeal_9 = f"{donor_prefix5}{seg_code}"
 
         # Program code (by 2-char prefix)
         program = PROGRAM_BY_PREFIX.get(seg_code[:2], "R")
@@ -157,7 +228,7 @@ def generate_appeal_codes(
 
         # 15-char internal appeal code: [Program][FY][Campaign][Segment][Package][Test]
         # Positions: 1(program) + 2(FY) + 2(campaign) + 4(segment) + 3(package) + 3(test) = 15
-        appeal_15 = f"{program}{campaign_fy}{campaign_month}{seg_code}{package}{test_flag}"
+        appeal_15 = f"{program}{donor_fy}{donor_month}{seg_code}{package}{test_flag}"
 
         # Donor ID for scanline (9-digit zero-padded)
         constituent_id = accts.get("Constituent_Id__c", pd.Series("", index=accts.index)).get(acct_id, "")
@@ -190,7 +261,18 @@ def generate_appeal_codes(
             "ca_version": ca_version,
             "missing_constituent_id": missing_id,
             "quantity_reduced": bool(row.get("quantity_reduced", False)),
+            # Per-donor campaign code lets output_files split the
+            # master DataFrame into one Print + one Matchback per
+            # campaign without re-deriving the routing.
+            "campaign_appeal_code_full": donor_campaign.get("appeal_code", ""),
         })
+
+    if unmatched_segments:
+        logger.warning(
+            f"  WARNING: {len(unmatched_segments)} segment(s) had no matching "
+            f"campaign in selection: {sorted(unmatched_segments)}. "
+            f"Donors in those segments were dropped from output."
+        )
 
     df = pd.DataFrame(results)
 

@@ -48,6 +48,17 @@ function getCloudRunToken_(audience) {
  */
 function approveScenario(payload) {
   try {
+    // Inject the operator's email server-side. The browser can't read
+    // Session.getActiveUser() — Apps Script can. Item D's nuclear
+    // audit log relies on this for the `operator` field.
+    try {
+      var email = Session.getActiveUser().getEmail();
+      if (email) {
+        payload = payload || {};
+        payload.operator = email;
+        if (payload.campaign) payload.campaign.operator = email;
+      }
+    } catch (eEmail) {}
     const token = getCloudRunToken_(APPROVE_SCENARIO_URL);
     const response = UrlFetchApp.fetch(APPROVE_SCENARIO_URL, {
       method: 'POST',

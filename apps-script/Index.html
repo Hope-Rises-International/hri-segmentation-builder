@@ -273,10 +273,27 @@
 
   <!-- Step 1: Campaign Selection -->
   <div class="card" id="step-select">
-    <h2>Step 1: Select Campaign</h2>
+    <h2>Step 1: Select Campaign(s)</h2>
+    <p style="font-size:12px;color:var(--hri-muted);margin-bottom:8px">
+      Pick a primary campaign, then optionally bundle additional campaigns.
+      Cohorts route by campaign prefix:
+      <strong>A</strong> → general housefile / Cornerstone / Sustainer / New Donor;
+      <strong>M</strong> → Mid-Level / Mid-Level Prospect;
+      <strong>J</strong> → Major Gift (J wins if M+J both selected).
+    </p>
     <select id="campaign-select" onchange="onCampaignSelect()">
       <option value="">Loading campaigns...</option>
     </select>
+    <div id="campaign-multi-list"
+         style="margin-top:12px;border:1px solid var(--hri-border);border-radius:6px;
+                padding:8px 10px;background:white;max-height:240px;overflow-y:auto;
+                display:none">
+      <div style="font-size:11px;color:var(--hri-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">
+        Bundle additional campaigns (each cohort routes to its matching prefix):
+      </div>
+      <div id="campaign-multi-checkboxes"></div>
+    </div>
+    <div id="campaign-validation" style="margin-top:8px"></div>
     <div id="campaign-info" class="campaign-info hidden"></div>
     <div id="baseline-section" class="hidden" style="margin-top:16px">
       <label style="font-size:12px;color:var(--hri-muted);display:block;margin-bottom:6px">
@@ -337,11 +354,32 @@
     <h2>Step 2: Configure Segment Groups</h2>
     <p style="font-size:13px;color:var(--hri-muted);margin-bottom:12px">
       Toggle waterfall positions ON/OFF for this campaign. Changes affect who gets mailed.
+      <strong>GROUP toggles</strong> (Cornerstone, Sustainer, New Donor, Major Gift,
+      Mid-Level, Mid-Level Prospect) — OFF removes those donors from the universe.
+      <strong>RFM toggles</strong> (Active Housefile, Lapsed, Deep Lapsed) — OFF skips
+      the assignment gate; donors stay in the universe and may route to other ON positions.
     </p>
     <h3>Waterfall Positions</h3>
     <div class="toggle-grid" id="waterfall-toggles"></div>
     <h3>Suppression Rules</h3>
     <div class="toggle-grid" id="suppression-toggles"></div>
+
+    <!-- Nuclear mode (Item D, 2026-04-28) -->
+    <div id="nuclear-section" style="margin-top:16px;padding:12px;border:1px solid #c87941;background:#fef3eb;border-radius:6px">
+      <div id="nuclear-banner" class="hidden" style="background:#c0392b;color:white;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-weight:600;cursor:pointer"
+           onclick="disableNuclear()">
+        ⚠ NUCLEAR MODE ACTIVE — rule-based suppressions bypassed. Click to disable.
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+        <input type="checkbox" id="toggle-nuclear" onchange="onNuclearChange()">
+        <strong>Nuclear mode</strong> — bypass rule-based suppressions; force all GROUP toggles ON
+      </label>
+      <div style="font-size:11px;color:var(--hri-muted);margin-top:4px">
+        Emergency / full-housefile blasts only. Tier 1 hard suppressions (deceased, DNC, blank
+        address) still apply. Cohort routing preserved. Cohort-prefix validation still runs.
+        Audit log written to Drive on each Nuclear run.
+      </div>
+    </div>
 
     <!-- Final action of Step 2: load the universe for the scenario editor -->
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--hri-border)">
@@ -463,8 +501,10 @@
 
 <script>
   // --- State ---
-  var selectedCampaign = null;
+  var selectedCampaign = null;       // primary (back-compat)
+  var selectedCampaignCodes = [];    // appeal_code strings selected for the run (Item C)
   var campaigns = [];
+  var nuclearArmed = false;          // Item D — set after double-confirm
 
   // --- Waterfall toggle definitions ---
   var WATERFALL_TOGGLES = [
@@ -542,6 +582,9 @@
     var idx = sel.value;
     if (idx === '') {
       selectedCampaign = null;
+      selectedCampaignCodes = [];
+      document.getElementById('campaign-multi-list').style.display = 'none';
+      document.getElementById('campaign-validation').innerHTML = '';
       hide('campaign-info');
       hide('mode-section');
       hide('baseline-section');
@@ -553,6 +596,10 @@
 
     selectedCampaign = campaigns[parseInt(idx)];
     var c = selectedCampaign;
+    // Seed the multi-select with the primary campaign checked.
+    selectedCampaignCodes = [c.appeal_code];
+    renderCampaignMultiList();
+    refreshCampaignValidation();
 
     // Show campaign info + the New/Actuals branch selector
     var info = document.getElementById('campaign-info');
@@ -757,6 +804,9 @@
     if (el && label) {
       label.textContent = el.checked ? 'ON' : 'OFF';
     }
+    // Re-validate the campaign selection — the operator may have just
+    // turned on a cohort whose required prefix isn't in the campaign list.
+    refreshCampaignValidation();
   }
 
   function getToggles() {
@@ -767,6 +817,182 @@
     });
     return toggles;
   }
+
+  // --- Multi-campaign selection (Item C, 2026-04-28) ---
+  // Renders a checkbox list of all campaigns whose appeal_code starts
+  // with A / M / J. The primary (Step 1 dropdown) is always checked.
+  // Operator can bundle additional campaigns to run a combined pull.
+  function renderCampaignMultiList() {
+    var box = document.getElementById('campaign-multi-list');
+    var inner = document.getElementById('campaign-multi-checkboxes');
+    if (!selectedCampaign) {
+      box.style.display = 'none';
+      inner.innerHTML = '';
+      return;
+    }
+    // Show only campaigns with prefix A, M, or J (these are the
+    // routing-relevant prefixes per spec). Other prefixes (e.g. R for
+    // legacy renewal codes) wouldn't route correctly under Item C.
+    var eligible = campaigns.filter(function(c) {
+      var p = (c.appeal_code || '').charAt(0);
+      return p === 'A' || p === 'M' || p === 'J';
+    });
+    var html = '';
+    eligible.forEach(function(c) {
+      var prefix = (c.appeal_code || '').charAt(0);
+      var isPrimary = c.appeal_code === selectedCampaign.appeal_code;
+      var checked = selectedCampaignCodes.indexOf(c.appeal_code) >= 0 ? 'checked' : '';
+      var disabled = isPrimary ? 'disabled' : '';   // Primary always selected
+      html += '<label style="display:block;font-size:13px;padding:3px 0;cursor:pointer">' +
+        '<input type="checkbox" value="' + escapeAttr(c.appeal_code) + '" ' +
+        checked + ' ' + disabled + ' onchange="onCampaignMultiChange(this)" ' +
+        'style="margin-right:6px"> ' +
+        '<span style="display:inline-block;width:24px;font-weight:600;color:var(--hri-teal)">' +
+          prefix + '</span>' +
+        '<span>' + escapeHtml(c.appeal_code + ' — ' + c.campaign_name) + '</span>' +
+        (isPrimary ? ' <span style="color:var(--hri-muted);font-size:11px">(primary)</span>' : '') +
+        '</label>';
+    });
+    inner.innerHTML = html;
+    box.style.display = 'block';
+  }
+
+  function onCampaignMultiChange(el) {
+    var ac = el.value;
+    if (el.checked) {
+      if (selectedCampaignCodes.indexOf(ac) < 0) selectedCampaignCodes.push(ac);
+    } else {
+      selectedCampaignCodes = selectedCampaignCodes.filter(function(x) { return x !== ac; });
+    }
+    refreshCampaignValidation();
+  }
+
+  function getSelectedCampaigns() {
+    if (!campaigns || !selectedCampaignCodes) return [];
+    return selectedCampaignCodes.map(function(ac) {
+      return campaigns.filter(function(c) { return c.appeal_code === ac; })[0];
+    }).filter(Boolean);
+  }
+
+  // Toggle → required prefix per Item C. Mirrors
+  // src/config.py:TOGGLE_PREFIX_RULES — keep in sync if either changes.
+  var TOGGLE_PREFIX = {
+    cornerstone:        'A',
+    sustainer:          'A',
+    new_donor:          'A',
+    active_housefile:   'A',
+    lapsed:             'A',
+    deep_lapsed:        'A',
+    mid_level:          'M',
+    mid_level_prospect: 'M',
+    major_gift:         'MJ',  // M default, J wins if J is selected
+  };
+  var TOGGLE_LABEL = {
+    cornerstone:        'Cornerstone',
+    sustainer:          'Sustainer',
+    new_donor:          'New Donor',
+    active_housefile:   'Active Housefile',
+    lapsed:             'Lapsed',
+    deep_lapsed:        'Deep Lapsed',
+    mid_level:          'Mid-Level',
+    mid_level_prospect: 'Mid-Level Prospect',
+    major_gift:         'Major Gift',
+  };
+
+  function refreshCampaignValidation() {
+    var msg = document.getElementById('campaign-validation');
+    if (!msg) return;
+    var sel = getSelectedCampaigns();
+    if (!sel.length) {
+      msg.innerHTML = '<div class="msg msg-error">Select at least one campaign.</div>';
+      return;
+    }
+    var prefixes = {};
+    sel.forEach(function(c) { prefixes[(c.appeal_code || '').charAt(0)] = true; });
+    var toggles = (typeof getToggles === 'function') ? getToggles() : {};
+    // If toggles haven't rendered yet, fall back to defaults.
+    if (Object.keys(toggles).length === 0) {
+      WATERFALL_TOGGLES.forEach(function(t) { toggles[t.key] = t.defaultOn; });
+    }
+    var errors = [];
+    Object.keys(TOGGLE_PREFIX).forEach(function(tk) {
+      if (!toggles[tk]) return;
+      var req = TOGGLE_PREFIX[tk];
+      var ok;
+      var label;
+      if (req === 'MJ') {
+        ok = prefixes['M'] || prefixes['J'];
+        label = 'M or J';
+      } else {
+        ok = prefixes[req];
+        label = req;
+      }
+      if (!ok) {
+        errors.push(TOGGLE_LABEL[tk] + ' toggle is ON but no ' + label +
+          '-prefix campaign is in your selection. Add a ' + label +
+          ' campaign or turn ' + TOGGLE_LABEL[tk] + ' OFF.');
+      }
+    });
+    if (errors.length === 0) {
+      msg.innerHTML = '<div class="msg msg-success">Campaign selection valid (' +
+        sel.map(function(c) { return c.appeal_code; }).join(', ') + ').</div>';
+    } else {
+      msg.innerHTML = '<div class="msg msg-error"><strong>Validation:</strong><ul style="margin:4px 0 0 18px">' +
+        errors.map(function(e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') +
+        '</ul></div>';
+    }
+  }
+
+  // --- Nuclear mode (Item D) — double confirm + banner ---
+  function onNuclearChange() {
+    var el = document.getElementById('toggle-nuclear');
+    if (!el.checked) {
+      // Operator un-checking is fine (cancellation). Reset banner.
+      nuclearArmed = false;
+      document.getElementById('nuclear-banner').classList.add('hidden');
+      return;
+    }
+    // Confirm step 1: explanation modal.
+    var ok1 = confirm(
+      'Nuclear mode bypasses Tier 2/3 suppressions, recent-gift, frequency cap, ' +
+      'and holdout. All cohort toggles force ON (Cornerstone, Sustainer, ' +
+      'New Donor, Mid-Level, MP, Major Gift).\n\n' +
+      'Cohort routing is preserved — Cornerstone donors still land in CS01, ' +
+      'Mid-Level in ML01, etc.\n\n' +
+      'Tier 1 hard suppressions (deceased, DNC, No Mail, Blank Address) still apply.\n\n' +
+      'Are you sure?'
+    );
+    if (!ok1) {
+      el.checked = false;
+      nuclearArmed = false;
+      return;
+    }
+    // Confirm step 2: type "NUCLEAR" — copy/paste defeated.
+    var typed = prompt('Type NUCLEAR to confirm activation:');
+    if (typed !== 'NUCLEAR') {
+      alert('Cancelled — Nuclear mode not activated.');
+      el.checked = false;
+      nuclearArmed = false;
+      return;
+    }
+    // Activated — show banner.
+    nuclearArmed = true;
+    document.getElementById('nuclear-banner').classList.remove('hidden');
+  }
+
+  function disableNuclear() {
+    var el = document.getElementById('toggle-nuclear');
+    if (el) el.checked = false;
+    nuclearArmed = false;
+    document.getElementById('nuclear-banner').classList.add('hidden');
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
 
   // --- Projection ---
   function runProjection() {
@@ -1131,6 +1357,7 @@
       }),
     };
 
+    var sel = getSelectedCampaigns();
     var payload = {
       campaign: {
         campaign_name: selectedCampaign.campaign_name,
@@ -1140,6 +1367,21 @@
         campaign_type: selectedCampaign.campaign_type,
         lane: selectedCampaign.lane || 'Housefile',
       },
+      // Item C: full multi-campaign list (always includes the primary).
+      selected_campaigns: sel.map(function(c) {
+        return {
+          appeal_code:       c.appeal_code,
+          campaign_name:     c.campaign_name,
+          fiscal_year:       c.fiscal_year,
+          month:             c.month,
+          fy:                c.fiscal_year,
+        };
+      }),
+      // Item D: forwarded; backend forces toggle overrides + skips
+      // Tier 2/3 + recent-gift + freq cap + holdout when true.
+      nuclear: !!nuclearArmed,
+      // Operator email from Apps Script (best-effort) for the Nuclear audit log.
+      operator: (typeof Session !== 'undefined' ? '' : ''),
       baseline_appeal_code: currentBaselineMode() === 'specific' ? (document.getElementById('baseline-select').value || '') : '',
       baseline_type: currentBaselineMode() === 'type' ? (document.getElementById('baseline-type-select').value || '') : '',
       toggles: getToggles(),
@@ -1150,6 +1392,13 @@
       .withSuccessHandler(function(result) {
         btn.disabled = false;
         btn.innerHTML = 'Approve & Generate Files';
+        if (result && result.status === 'validation_error') {
+          showMsg('approve-scenario-msg', 'error',
+            '<strong>Validation failed:</strong><ul style="margin:4px 0 0 18px">' +
+            (result.errors || []).map(function(e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') +
+            '</ul>');
+          return;
+        }
         if (result && result.error) {
           showMsg('approve-scenario-msg', 'error', result.error);
           return;
@@ -1161,16 +1410,37 @@
         }
         var urls = (result && result.drive_urls) || {};
         var counts = (result && result.counts) || {};
+        var perPrinter = urls.per_campaign_printer || {};
+        var perMatch = urls.per_campaign_matchback || {};
+        var fileLinks = '';
+        Object.keys(perPrinter).forEach(function(ac) {
+          fileLinks += '<br><strong>' + escapeHtml(ac) + ':</strong> ' +
+            '<a href="' + perPrinter[ac] + '" target="_blank">Print</a> &middot; ' +
+            '<a href="' + (perMatch[ac] || '#') + '" target="_blank">Matchback</a>';
+        });
+        if (!fileLinks) {
+          fileLinks =
+            (urls.printer   ? '<br><a href="' + urls.printer   + '" target="_blank">Printer File</a> &middot; ' : '') +
+            (urls.matchback ? '<a href="' + urls.matchback + '" target="_blank">Matchback File</a> &middot; ' : '');
+        }
+        var nuc = urls.nuclear_log
+          ? ' &middot; <a href="' + urls.nuclear_log + '" target="_blank">Nuclear Log</a>'
+          : '';
         var msg =
           '<strong>Approved!</strong> Campaign ' + (selectedCampaign.appeal_code || '') +
           ' status → Approved. ' +
           'Printer: ' + fmt(counts.printer_rows || 0) + ' rows. ' +
           'Matchback: ' + fmt(counts.matchback_rows || 0) + ' rows. ' +
           'Trimmed: ' + fmt(counts.trimmed || 0) + '. ' +
-          (urls.printer ? '<br><a href="' + urls.printer + '" target="_blank">Printer File</a> &middot; ' : '') +
-          (urls.matchback ? '<a href="' + urls.matchback + '" target="_blank">Matchback File</a> &middot; ' : '') +
-          (urls.audit ? '<a href="' + urls.audit + '" target="_blank">Suppression Audit</a>' : '');
+          fileLinks +
+          (urls.audit ? '<a href="' + urls.audit + '" target="_blank">Suppression Audit</a>' : '') +
+          nuc;
         showMsg('approve-scenario-msg', 'success', msg);
+
+        // Auto-reset Nuclear toggle after a successful run (Item D).
+        if (nuclearArmed) {
+          disableNuclear();
+        }
       })
       .withFailureHandler(function(e) {
         btn.disabled = false;

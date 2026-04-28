@@ -181,15 +181,25 @@ def approve_scenario_endpoint(request):
             "campaign_type": config.get("campaign_type", "Appeal"),
             "lane": config.get("lane", "Housefile"),
         }
+        # Operator's selection from the multi-select campaign picker
+        # (Item C). Single-campaign callers can omit this; the body
+        # of approve_scenario falls back to [campaign_config].
+        selected_campaigns = config.get("selected_campaigns") or config.get("campaigns") or []
+        # Pass operator email through for the Nuclear audit log
+        if "operator" in config and "operator" not in campaign_config:
+            campaign_config["operator"] = config.get("operator", "")
         scenario = config.get("scenario") or {}
         toggles = config.get("toggles", None)
         baseline_appeal_code = config.get("baseline_appeal_code", None) or None
         baseline_type = config.get("baseline_type", None) or None
+        nuclear = bool(config.get("nuclear", False))
 
         print(f"approve-scenario: campaign={campaign_config.get('appeal_code')}, "
               f"scenario={scenario.get('name','unnamed')}, "
               f"overrides={len(scenario.get('segments',[]))}, "
-              f"baseline_type={baseline_type}, baseline_code={baseline_appeal_code}")
+              f"baseline_type={baseline_type}, baseline_code={baseline_appeal_code}, "
+              f"selected_campaigns={[c.get('appeal_code') for c in selected_campaigns]}, "
+              f"nuclear={nuclear}")
 
         result = approve_scenario(
             campaign_config=campaign_config,
@@ -197,6 +207,8 @@ def approve_scenario_endpoint(request):
             toggles=toggles,
             baseline_appeal_code=baseline_appeal_code,
             baseline_type=baseline_type,
+            selected_campaigns=selected_campaigns,
+            nuclear=nuclear,
         )
         duration = time.time() - start
         result["duration_seconds"] = round(duration, 1)

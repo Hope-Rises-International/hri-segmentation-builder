@@ -169,10 +169,24 @@ class PipelineWriteRecovery:
         campaign_appeal_code: str,
         lane: str = "Housefile",
         exceptions_csv: str = "",
+        per_campaign: dict = None,
+        nuclear_log_csv: str = "",
     ) -> dict:
         """Execute pipeline writes in order: Drive → Sheets → SF.
 
         Returns status dict with per-target success/fail.
+
+        Multi-campaign mode (Item C, 2026-04-28): when `per_campaign`
+        is supplied, one Print + one Matchback file pair is uploaded
+        per campaign code (filename uses that campaign's code as the
+        prefix). The aggregate `printer_csv`/`matchback_csv` is still
+        accepted but ignored for filename purposes when per_campaign
+        has entries — splitting the files keeps Faircom's per-campaign
+        ingestion clean.
+
+        Nuclear mode audit log (Item D): when `nuclear_log_csv` is
+        supplied, a separate `nuclear_run_<campaign>_<TS>.log` file is
+        written to Drive alongside the standard outputs.
         """
         from sheets_client import upload_csv_to_drive
 
@@ -184,12 +198,34 @@ class PipelineWriteRecovery:
         try:
             logger.info("Pipeline write 1/3: Google Drive...")
 
-            printer_url = upload_csv_to_drive(
-                gc, f"HRI_{campaign_code}_{lane}_PRINT_{date_str}.csv", printer_csv
-            )
-            matchback_url = upload_csv_to_drive(
-                gc, f"HRI_{campaign_code}_{lane}_MATCHBACK_{date_str}.csv", matchback_csv
-            )
+            printer_urls = {}
+            matchback_urls = {}
+            if per_campaign:
+                # One file pair per campaign — Faircom prefers split
+                # files. Filename = HRI_<CampaignCode>_<Lane>_PRINT_<YYYYMMDD>.csv
+                for ac, p in per_campaign.items():
+                    p_url = upload_csv_to_drive(
+                        gc, f"HRI_{ac}_{lane}_PRINT_{date_str}.csv", p["printer_csv"]
+                    )
+                    m_url = upload_csv_to_drive(
+                        gc, f"HRI_{ac}_{lane}_MATCHBACK_{date_str}.csv", p["matchback_csv"]
+                    )
+                    printer_urls[ac] = p_url
+                    matchback_urls[ac] = m_url
+                # Pick the first as the back-compat "headline" URL.
+                first_ac = next(iter(per_campaign))
+                printer_url = printer_urls[first_ac]
+                matchback_url = matchback_urls[first_ac]
+            else:
+                printer_url = upload_csv_to_drive(
+                    gc, f"HRI_{campaign_code}_{lane}_PRINT_{date_str}.csv", printer_csv
+                )
+                matchback_url = upload_csv_to_drive(
+                    gc, f"HRI_{campaign_code}_{lane}_MATCHBACK_{date_str}.csv", matchback_csv
+                )
+                printer_urls[campaign_code] = printer_url
+                matchback_urls[campaign_code] = matchback_url
+
             audit_url = upload_csv_to_drive(
                 gc, f"suppression_audit_{campaign_code}_{date_str}.csv", suppression_audit_csv
             )
@@ -198,6 +234,8 @@ class PipelineWriteRecovery:
                 "printer": printer_url,
                 "matchback": matchback_url,
                 "audit": audit_url,
+                "per_campaign_printer":   printer_urls,
+                "per_campaign_matchback": matchback_urls,
             }
 
             # Upload exceptions CSV if there are excluded records
@@ -206,8 +244,21 @@ class PipelineWriteRecovery:
                     gc, f"exceptions_{campaign_code}_{date_str}.csv", exceptions_csv
                 )
                 drive_urls["exceptions"] = exceptions_url
+
+            # Nuclear mode audit log: written next to outputs so an
+            # operator reading the folder later can see Nuclear was
+            # used and what changed.
+            if nuclear_log_csv:
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                nuc_url = upload_csv_to_drive(
+                    gc, f"nuclear_run_{campaign_code}_{ts}.log", nuclear_log_csv
+                )
+                drive_urls["nuclear_log"] = nuc_url
             self.status["drive_write"] = "success"
-            logger.info(f"  Drive: 3 files uploaded")
+            logger.info(
+                f"  Drive: {len(printer_urls) * 2} output files + audit"
+                + (" + nuclear_log" if nuclear_log_csv else "")
+            )
         except Exception as e:
             self.status["drive_write"] = "fail"
             self.status["error_message"] = f"Drive: {e}"
