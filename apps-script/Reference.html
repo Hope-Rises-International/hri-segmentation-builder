@@ -13,7 +13,7 @@
 </style>
 
 <h1>HRI Segmentation Builder — Logic &amp; Math Reference</h1>
-<div class="ref-subtitle">Synced from SPEC.md v3.3 (2026-04-28). Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+<div class="ref-subtitle">Synced from SPEC.md v3.4 (2026-04-28). Edit the <code>Reference.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
 
 <h2>1. Waterfall Hierarchy</h2>
 <p>Each donor lands in exactly one position. Position priority is top-down — the first match wins.</p>
@@ -101,7 +101,7 @@
     <tr><td>Break-even suppression</td><td>ON</td><td>Active</td><td>Drop segments below break-even response rate.</td></tr>
     <tr><td>Response-rate floor</td><td>ON</td><td>Active</td><td>Drop segments below configured RR floor (0.8% default).</td></tr>
     <tr><td>Frequency cap</td><td>OFF</td><td>Inert (frequency field unpopulated)</td><td>Toggle exists; no-op until upstream populates the FY mailing count.</td></tr>
-    <tr><td>5% holdout</td><td>ON</td><td>Active</td><td>Random 5% suppressed-segment holdout for ROI measurement. Skipped under Nuclear mode.</td></tr>
+    <tr><td>Holdout %</td><td>5 per segment</td><td>Per-segment column (v3.4)</td><td>Per-segment integer 0–5 in the Step 3 scenario editor. 5 = held; 0 = no holdout for that segment. Soft warning (orange) when row value &lt; 3 — "low holdout reduces ROI measurement power for this segment." Replaces the prior global ON/OFF toggle. Skipped entirely under Nuclear mode.</td></tr>
   </tbody>
 </table>
 
@@ -168,7 +168,7 @@
 
 <h2>10. Holdout &amp; Floor-Collapse Edge Cases</h2>
 <div class="narrative">
-<p><strong>5% holdout:</strong> A random 5% of each campaign's qualified universe is suppressed from the Print file (not mailed) and retained in the Matchback (with <code>Holdout=TRUE</code>) for ROI measurement. The same donor pool is used for control vs. treatment when comparing campaign performance.</p>
+<p><strong>Per-segment holdout (v3.4):</strong> each segment row in the Step 3 scenario editor has its own <code>Holdout %</code> column (default 5; integer range 0–5). The selected fraction of each segment's mailable cohort is suppressed from the Print file and retained in the Matchback with <code>Holdout=TRUE</code> for ROI measurement. The 5% upper bound preserves the measurement-infrastructure cap; 0 means no holdout for that segment. Soft warning (orange) appears below 3% to flag reduced measurement power. Random sampling is seeded per segment so re-runs of the same scenario produce identical Holdout=TRUE row sets.</p>
 <p><strong>Floor-collapse fallback:</strong> When any tier of the basis-driven ladder falls below the $15 floor, replace the whole ladder with <code>$15 / $25 / $35</code> as a unit. Never re-floor tiers independently. Avoids non-monotonic outputs like <code>15 / 20 / 15</code> for tiny basis values.</p>
 <p><strong>Toggle bucket model (v3.3):</strong> GROUP toggles (Cornerstone, Sustainer, Major Gift, Mid-Level) <em>remove</em> matching donors from the universe entirely when OFF. RFM toggles (Active Housefile, Lapsed, Deep Lapsed) <em>skip</em> the assignment gate when OFF — the donor stays in the universe and may route to other ON positions. A Mid-Level + R1 donor lands in ML01 even with Active Housefile OFF; cohort identity is preserved. Cornerstone OFF means zero Cornerstone-flagged donors anywhere in the output. New Donor (90-day welcome window) is pre-empted at Tier 1.5 above the waterfall and is not part of the GROUP/RFM toggle set; the welcome series itself runs as a separate workflow.</p>
 </div>

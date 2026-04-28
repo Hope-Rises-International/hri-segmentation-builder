@@ -526,6 +526,9 @@
   // OFF requires N-prefix campaign). no_name_sharing dropped (acquisition
   // co-op only). recent_gift_window kept inert and labeled "(unbuilt)"
   // until Faircom guidance lands. Tier 3 deleted.
+  // v3.4 (2026-04-28): holdout removed from this panel — moved to a
+  // per-segment column in the Step 3 scenario editor table (default 5,
+  // range 0–5).
   var SUPPRESSION_TOGGLES = [
     { key: 'no_mail_code', label: 'No Mail Code (Tier 2 always-on)', defaultOn: true },
     { key: 'major_donor_in_house', label: 'Major Donor In-House (suppress)', defaultOn: true },
@@ -537,7 +540,6 @@
     { key: 'break_even_floor', label: 'Break-Even Floor', defaultOn: true },
     { key: 'response_rate_floor', label: 'Response Rate Floor (0.8%)', defaultOn: true },
     { key: 'frequency_cap', label: 'Frequency Cap (6/year)', defaultOn: false },
-    { key: 'holdout', label: 'Holdout (5%)', defaultOn: true },
   ];
 
   // --- Init ---
@@ -1189,7 +1191,8 @@
       'Built in ' + result.meta.total_seconds + 's';
     show('universe-meta');
 
-    // Initialize scenario segments from universe segment aggregates
+    // Initialize scenario segments from universe segment aggregates.
+    // v3.4: holdout_pct is per-row (default 5; range 0–5).
     draftSegments = result.segments.map(function(s) {
       return {
         code: s.segment_code,
@@ -1209,6 +1212,7 @@
         status: 'Include',
         include: true,
         percent: 100,
+        holdout_pct: 5,
       };
     });
 
@@ -1332,18 +1336,25 @@
   }
 
   // --- Current Scenario Totals (for target display) ---
+  // v3.4: cost / revenue are computed against the mailable count (gross
+  // fit minus per-segment holdout), so the auto-fit / target indicator
+  // honors holdout the same way the segment table does.
   function computeScenarioTotals() {
-    var qty = 0, cost = 0, rev = 0;
+    var qty = 0, cost = 0, rev = 0, mail = 0;
     draftSegments.forEach(function(s) {
       if (!s.include) return;
       var effQ = Math.round(s.qty * s.percent / 100);
+      var hPct = (typeof s.holdout_pct === 'number') ? s.holdout_pct : 5;
+      var held = Math.round(effQ * hPct / 100);
+      var mailable = Math.max(0, effQ - held);
       qty += effQ;
-      cost += effQ * s.cpp;
-      rev += effQ * s.rr * s.avg;
+      mail += mailable;
+      cost += mailable * s.cpp;
+      rev += mailable * s.rr * s.avg;
     });
     var net = rev - cost;
     var roi = cost > 0 ? rev / cost : 0;
-    return { qty: qty, cost: cost, rev: rev, net: net, roi: roi };
+    return { qty: qty, mailable: mail, cost: cost, rev: rev, net: net, roi: roi };
   }
 
   // --- Approve Current Scenario (Phase 3) ---
@@ -1363,7 +1374,7 @@
       target_type: document.getElementById('target-type').value,
       target_value: Number(document.getElementById('target-value').value || 0),
       segments: draftSegments.map(function(s) {
-        return { code: s.code, include: s.include, percent: s.percent };
+        return { code: s.code, include: s.include, percent: s.percent, holdout_pct: s.holdout_pct };
       }),
     };
 
@@ -1477,7 +1488,7 @@
       name: name,
       saved_at: new Date().toISOString(),
       segments: draftSegments.map(function(s) {
-        return { code: s.code, include: s.include, percent: s.percent };
+        return { code: s.code, include: s.include, percent: s.percent, holdout_pct: s.holdout_pct };
       }),
       totals: totals,
       target_type: document.getElementById('target-type').value,
@@ -1548,6 +1559,13 @@
       var pm = statusStr.match(/(\d+)%/);
       if (pm) defaultPercent = Number(pm[1]);
       if (String(s['% Include'] || '').match(/^\d+$/)) defaultPercent = Number(s['% Include']);
+      // v3.4: per-segment Holdout %. Default 5; honor any saved value
+      // already in the Draft tab.
+      var holdoutPct = 5;
+      if (s['Holdout %'] !== undefined && s['Holdout %'] !== '') {
+        var h = Number(s['Holdout %']);
+        if (!isNaN(h)) holdoutPct = Math.max(0, Math.min(5, Math.round(h)));
+      }
       return {
         code: s['Segment Code'] || '',
         name: s['Segment Name'] || '',
@@ -1565,6 +1583,7 @@
         status: statusStr,
         include: defaultInclude,
         percent: defaultPercent,
+        holdout_pct: holdoutPct,
       };
     });
     renderDraftHTML();
@@ -1586,25 +1605,39 @@
     var html = '<h3>Scenario Editor — Segment Table</h3>' +
       '<p style="font-size:12px;color:var(--hri-muted);margin-bottom:8px">' +
       'Uncheck a segment to exclude it. Set % Include (1-100) to keep only the top-ranked RFM donors. ' +
+      'Set Holdout % (0-5) for the per-segment ROI control sample (default 5; ' +
+      '<span style="color:#c87941;font-weight:600">orange</span> = below 3, low measurement power). ' +
       'All totals recalculate instantly — no server round-trip.</p>' +
       '<table class="seg-table"><thead><tr>' +
       '<th>Include</th><th>Segment</th><th>Name</th><th class="num">Qty</th>' +
       '<th class="num" title="% Include: keep top N% by RFM score">% Incl</th>' +
+      '<th class="num" title="Holdout %: random ROI control sample, 0–5 (default 5)">Holdout %</th>' +
       '<th class="num">Budget Fit</th>' +
+      '<th class="num">Holdout</th>' +
+      '<th class="num">Mailable</th>' +
       '<th class="num">CPP</th><th class="num">Total Cost</th>' +
       '<th class="num">Hist RR</th><th class="num">Hist AvgGift</th>' +
       '<th class="num">Proj Rev</th><th class="num">Net Rev</th>' +
       '<th>Status</th></tr></thead><tbody>';
 
-    var total = 0, totalCost = 0, totalRev = 0, totalNet = 0;
+    var total = 0, totalCost = 0, totalRev = 0, totalNet = 0, totalHold = 0, totalMail = 0;
 
     draftSegments.forEach(function(s, i) {
       // Effective quantity after operator overrides
       var effectiveFit = s.include ? Math.round(s.fit * s.percent / 100) : 0;
-      var effectiveCost = effectiveFit * s.cpp;
-      var effectiveRev = effectiveFit * s.rr * s.avg;
+      // v3.4: per-segment holdout. holdout_pct is 0..5; effective
+      // mailable count = effectiveFit minus holdout sample. Cost /
+      // revenue use the mailable count, not the gross fit, because
+      // holdouts aren't mailed.
+      var holdoutPct = (typeof s.holdout_pct === 'number') ? s.holdout_pct : 5;
+      var heldOut = s.include ? Math.round(effectiveFit * holdoutPct / 100) : 0;
+      var mailable = Math.max(0, effectiveFit - heldOut);
+      var effectiveCost = mailable * s.cpp;
+      var effectiveRev = mailable * s.rr * s.avg;
       var effectiveNet = effectiveRev - effectiveCost;
       total += effectiveFit;
+      totalHold += heldOut;
+      totalMail += mailable;
       totalCost += effectiveCost;
       totalRev += effectiveRev;
       totalNet += effectiveNet;
@@ -1619,6 +1652,14 @@
       var includeChecked = s.include ? 'checked' : '';
       var rowStyle = s.include ? '' : ' style="opacity:0.4"';
 
+      // v3.4: soft warning when holdout < 3 (orange text + tooltip).
+      var holdoutWarn = (s.include && holdoutPct < 3);
+      var holdoutInputStyle = 'width:50px;text-align:right;font-size:12px;padding:2px 4px';
+      if (holdoutWarn) holdoutInputStyle += ';color:#c87941;font-weight:600;border-color:#c87941';
+      var holdoutTooltip = holdoutWarn
+        ? 'low holdout reduces ROI measurement power for this segment'
+        : 'random ROI control sample, 0-5 (default 5)';
+
       html += '<tr' + rowStyle + '>' +
         '<td><input type="checkbox" ' + includeChecked + ' onchange="onSegmentInclude(' + i + ', this.checked)"></td>' +
         '<td>' + s.code + '</td>' +
@@ -1628,7 +1669,15 @@
           '" style="width:50px;text-align:right;font-size:12px;padding:2px 4px" ' +
           'onchange="onSegmentPercent(' + i + ', this.value)"' +
           (s.include ? '' : ' disabled') + '></td>' +
+        '<td class="num"><input type="number" min="0" max="5" step="1" value="' + holdoutPct +
+          '" style="' + holdoutInputStyle + '" title="' + escapeAttr(holdoutTooltip) + '"' +
+          ' onchange="onSegmentHoldout(' + i + ', this.value)"' +
+          (s.include ? '' : ' disabled') + '>' +
+          (holdoutWarn ? ' <span style="color:#c87941;font-weight:600" title="' + escapeAttr(holdoutTooltip) + '">⚠</span>' : '') +
+          '</td>' +
         '<td class="num">' + fmt(effectiveFit) + '</td>' +
+        '<td class="num">' + fmt(heldOut) + '</td>' +
+        '<td class="num">' + fmt(mailable) + '</td>' +
         '<td class="num">' + (s.cpp ? '$' + s.cpp.toFixed(2) : '') + '</td>' +
         '<td class="num">' + (effectiveCost ? '$' + fmt(Math.round(effectiveCost)) : '') + '</td>' +
         '<td class="num">' + s.rr_str + '</td>' +
@@ -1640,8 +1689,10 @@
 
     html += '</tbody><tfoot><tr>' +
       '<td colspan="3"><strong>Totals</strong></td>' +
-      '<td></td><td></td>' +
+      '<td></td><td></td><td></td>' +
       '<td class="num"><strong>' + fmt(total) + '</strong></td>' +
+      '<td class="num"><strong>' + fmt(totalHold) + '</strong></td>' +
+      '<td class="num"><strong>' + fmt(totalMail) + '</strong></td>' +
       '<td></td><td class="num"><strong>$' + fmt(Math.round(totalCost)) + '</strong></td>' +
       '<td colspan="2"></td>' +
       '<td class="num"><strong>$' + fmt(Math.round(totalRev)) + '</strong></td>' +
@@ -1668,10 +1719,24 @@
     renderDraftHTML();
   }
 
+  // v3.4: per-segment Holdout %. Range 0–5 integer; reject anything
+  // outside that band. Passing the cap as a hard clamp rather than a
+  // hard error keeps the UI fluid (the operator's typed-but-not-yet-
+  // committed value is gently coerced) while still preventing values
+  // that would break the measurement-infrastructure ceiling.
+  function onSegmentHoldout(idx, value) {
+    var n = Math.round(Number(value));
+    if (isNaN(n)) n = 5;
+    n = Math.max(0, Math.min(5, n));
+    draftSegments[idx].holdout_pct = n;
+    renderDraftHTML();
+  }
+
   function resetSegmentOverrides() {
     draftSegments.forEach(function(s) {
       s.include = !s.status.includes('Below Budget Line');
       s.percent = 100;
+      s.holdout_pct = 5;   // v3.4: reset to the default
     });
     renderDraftHTML();
   }
@@ -1679,10 +1744,12 @@
   function getSegmentOverrides() {
     var overrides = {};
     draftSegments.forEach(function(s) {
-      if (!s.include || s.percent < 100) {
+      var hPct = (typeof s.holdout_pct === 'number') ? s.holdout_pct : 5;
+      if (!s.include || s.percent < 100 || hPct !== 5) {
         overrides[s.code] = {
           include: s.include,
           percent_include: s.include ? s.percent : 0,
+          holdout_pct: hPct,
         };
       }
     });

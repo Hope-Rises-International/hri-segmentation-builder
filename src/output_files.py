@@ -165,6 +165,7 @@ def generate_output_files(
     holdout_pct=0.0,
     holdout_seed=42,
     selected_campaigns=None,
+    holdout_pct_by_segment=None,
 ):
     """Generate all output files via vectorized pandas operations.
 
@@ -180,6 +181,15 @@ def generate_output_files(
     can upload one pair per campaign with the correct filename prefix.
 
     Single-campaign mode (default): unchanged from prior behavior.
+
+    v3.4 holdout (2026-04-28): when `holdout_pct_by_segment` is
+    supplied (mapping segment_code → integer 0–5), per-segment holdout
+    overrides the legacy global `holdout_pct`. A row value of 0 skips
+    holdout for that segment entirely. The seed is mixed with the
+    segment code so each segment's sample is independent and stable
+    across re-runs of the same scenario. When `holdout_pct_by_segment`
+    is None, the legacy single-percent behavior applies (all segments
+    share `holdout_pct`).
     """
     import time
     t0 = time.time()
@@ -192,8 +202,44 @@ def generate_output_files(
     clean_codes, excluded_codes, exceptions_df = apply_constituent_id_filter(codes_df, accounts_df)
 
     # --- Holdout ---
+    # v3.4: per-segment holdout. When `holdout_pct_by_segment` is
+    # supplied (UI sends one row per segment with an integer 0–5), we
+    # iterate per segment and sample that segment's clean donors at the
+    # row's percent. The seed is `holdout_seed` mixed with the segment
+    # code so each segment's sample is stable and independent across
+    # re-runs of the same scenario. A row value of 0 skips holdout for
+    # that segment (no records flagged Holdout=true).
+    #
+    # When `holdout_pct_by_segment` is None we fall back to the legacy
+    # global single-percent path so callers that haven't been updated
+    # (run_diagnostic, ad-hoc tools) keep working.
     holdout_ids = set()
-    if holdout_pct > 0 and len(clean_codes) > 0:
+    if holdout_pct_by_segment is not None and len(clean_codes) > 0:
+        seg_groups = clean_codes.groupby("segment_code", dropna=False)
+        per_segment_counts = []
+        for seg_code, seg_rows in seg_groups:
+            seg_pct = holdout_pct_by_segment.get(seg_code, 5)
+            try:
+                seg_pct = int(seg_pct)
+            except (TypeError, ValueError):
+                seg_pct = 5
+            seg_pct = max(0, min(5, seg_pct))
+            if seg_pct == 0 or len(seg_rows) == 0:
+                per_segment_counts.append((seg_code, 0, len(seg_rows), seg_pct))
+                continue
+            n_seg_hold = max(1, int(len(seg_rows) * seg_pct / 100))
+            n_seg_hold = min(n_seg_hold, len(seg_rows))
+            # Mix seed with segment code so each segment's sample is
+            # independent and stable across re-runs.
+            seg_seed = (holdout_seed * 1_000_003) ^ hash(str(seg_code))
+            rng = random.Random(seg_seed)
+            seg_aids = list(seg_rows["account_id"])
+            holdout_ids.update(rng.sample(seg_aids, n_seg_hold))
+            per_segment_counts.append((seg_code, n_seg_hold, len(seg_rows), seg_pct))
+        for seg_code, held, total, pct in per_segment_counts:
+            if total > 0:
+                logger.info(f"  Holdout [{seg_code}]: {held:,} of {total:,} ({pct}%)")
+    elif holdout_pct > 0 and len(clean_codes) > 0:
         n_holdout = max(1, int(len(clean_codes) * holdout_pct / 100))
         random.seed(holdout_seed)
         holdout_ids = set(random.sample(list(clean_codes["account_id"]), min(n_holdout, len(clean_codes))))

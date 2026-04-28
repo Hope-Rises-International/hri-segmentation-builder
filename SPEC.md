@@ -1,7 +1,7 @@
 # HRI Segmentation Builder — Full Specification
 
 **Hope Rises International**
-**Version 3.****3**** — April 28, 2026**
+**Version 3.4 — April 28, 2026**
 **FIS Component: Segmentation Engine + Segment Data Loader + Campaign Intelligence Workbook**
 
 ---
@@ -14,7 +14,8 @@
 | 3.0 | April 10, 2026 | External review triage (ChatGPT + Gemini). Appeal code diagram fix. Intra-segment tie-breaker. Ask rounding direction. Run idempotency model. Draft-tab review pattern. Suppression audit log → Google Drive. Suppression rules as toggles. ZIP validation revised. Retention policy. Sheets-as-database migration flag. |
 | 3.1 | April 10, 2026 | Segment group toggle panel (systematic include/exclude for all waterfall positions). Cornerstone flag read-only (scoring model deferred — flag maintained externally via triage query). Waterfall positions toggle-gated. |
 | 3.2 | April 13–14, 2026 | Object model correction: Contact → Account throughout. "Source code" → "appeal code" terminology. Scanline architecture: 9-digit donor ID + 9-char appeal code, confirmed against physical mail piece. Two-file output: Printer File (agency, 9-char) and Internal Matchback File (HRI, 15-char). GCS → Google Drive. Three-tier donor-level suppression system (Bekah reviewed). Cornerstone field → `Cornerstone_Partner__c`. MIC confirmed live. Baseline campaign selector for historical performance projection (Section 7.2). Pipeline write recovery with sequential write order, per-target success/fail flags, and retry logic (Section 3). Phase 1 reframed as explicit diagnostic gate for open items 1–3. Single-operator constraint documented. `campaign_type` field added to MIC. Six open items resolved (#5, #6, #8, #11, #12, #13). |
-| 3.3 | April 28, 2026 | Bekah/Bill/Erica/Jessica review. Mid-Level redefined: 24-month cumulative (not lifetime), $750 floor, no upper cap. Mid-Level Prospect (MP01) eliminated — sub-$750 routes to active housefile / lapsed RFM. Account.Type (DAF, Government) and Account.RecordType (3 ALM org types) added to Tier 1 hard suppression. SF field rename: `TLC_Donor_Segmentation__c` → `Major_Donor_In_House__c`; values reduced to blank vs "In House"; routed as Tier 2 always-on suppression. Tier 1 / Tier 2 / Tier 3 reorganized: NCOA Deceased / Not Deliverable / Primary Contact Deceased removed; No Mail Code moved to Tier 2 always-on toggle; No Name Sharing / Address Unknown / Newsletter and Prospectus Only removed from Tier 2; X1/X2 Christmas mailing flags promoted from Tier 3 to Tier 2; Tier 3 deleted entirely. New Donor Welcome promoted from waterfall GROUP_EXCLUDE to Tier 1.5 hard pre-emption. Cohort prefix routing: J-prefix removed (was misinterpreted), N-prefix added for in-house Major Donor mailings. Recent-gift window clarified as spec'd-but-not-built pending Faircom guidance. Miracle Partner vs Cornerstone overlap: Miracle Partner wins (already correct in code; documented explicitly). |
+| 3.4 | April 28, 2026 | Per-segment Holdout %. Holdout moves from a global ON/OFF toggle to a per-segment column in the scenario editor segment table. Default 5%; range 0–5% (cap preserves measurement upper bound; 0 = no holdout for that segment). Soft UI warning when value < 3% ("low holdout reduces ROI measurement power"). Replaces the hard-coded global toggle with operator-tunable per-row decisions, matching the existing `% INCL` per-segment column pattern. Driven by Bill 2026-04-28 review of A2651+M2651 universe — 5% holdout costs ~53 mid-level mailings on a 1,074-donor cohort, worth letting the operator dial down per segment when the trade-off is justified. |
+| 3.3 | April 28, 2026 | Bekah/Bill/Erica/Jessica review. Mid-Level redefined: 24-month cumulative (not lifetime), $750 floor, no upper cap. Mid-Level Prospect (MP01) eliminated — sub-$750 routes to active housefile / lapsed RFM. Account.Type (DAF, Government) and Account.RecordType (3 ALM org types) added to Tier 1 hard suppression. SF field rename: `TLC_Donor_Segmentation__c` → `Major_Donor_In_House__c`; picklist reduced to `Major - In House` + blank (574 `Mid - TLC` records cleared); routed as Tier 2 always-on suppression. Tier 1 / Tier 2 / Tier 3 reorganized: NCOA Deceased / Not Deliverable / Primary Contact Deceased removed; No Mail Code moved to Tier 2 always-on toggle; No Name Sharing / Address Unknown / Newsletter and Prospectus Only removed from Tier 2; X1/X2 Christmas mailing flags promoted from Tier 3 to Tier 2; Tier 3 deleted entirely. New Donor Welcome promoted from waterfall GROUP_EXCLUDE to Tier 1.5 hard pre-emption. Cohort prefix routing: J-prefix removed (was misinterpreted), N-prefix added for in-house Major Donor mailings. Recent-gift window clarified as spec'd-but-not-built pending Faircom guidance. Miracle Partner vs Cornerstone overlap: Miracle Partner wins (already correct in code; documented explicitly). **Patch (post-builder)**: §5.5.1 originally stated the picklist value would be `In House`; architect kept the live value `Major - In House` to avoid a 174-record migration and didn't update §5.5.1. Builder caught the drift; suppression code uses whitespace-stripped match for forward compatibility. SPEC §5.5.1 corrected. |
 
 ---
 
@@ -277,7 +278,8 @@ Below the toggle panel, a **segment rules panel** shows configurable parameters 
 - **Ask floor/ceiling** (default: $15 / $4,999.99)
 - **Response rate floor** (default: 0.8%)
 - **Frequency cap** (default: 6 solicitations/year) — toggle: ON/OFF
-- **Holdout percentage** (default: 5% of suppressed segments) — toggle: ON/OFF
+
+**Holdout (v3.4):** the global Holdout toggle is removed from this panel. Holdout is now a **per-segment column** in the Step 3 scenario editor segment table — see below. Default 5% per segment; range 0–5%; operator can dial down per segment when the trade-off is justified.
 
 Each parameter shows the default with an edit control. Most campaigns require no changes.
 
@@ -287,8 +289,10 @@ Jessica clicks "Run Projection." The system executes the three-pass projection:
 
 **Pass 1 — Full Universe.** The engine queries Salesforce (all ~50K accounts with opportunity-derived fields in one pass), applies the waterfall with all rules, and computes the complete qualified universe with no quantity cap. Results write to the **Draft tab** in the MIC. Jessica reviews the projection in Sheets — segment quantities, economics, break-even flags, and inclusion/exclusion status are all visible in the familiar spreadsheet interface. The Draft tab shows one row per segment:
 
-| Segment Code | Segment Name | Quantity | Hist. Response Rate | Hist. Avg Gift | Proj. Gross Revenue | CPP | Total Cost | Proj. Net Revenue | Break-Even Rate | Margin | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Include | Segment Code | Segment Name | Quantity | % INCL | Holdout % | Budget Fit | CPP | Total Cost | Hist. RR | Hist. Avg Gift | Proj. Rev | Net Rev | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+**Per-segment Holdout % column (v3.4):** every segment row carries a `Holdout %` column. Default 5; range 0–5; integer step. Operator can dial down per segment when the trade-off is justified (e.g., small mid-level cohort where 5% costs ~50 mailable donors). The 5% upper bound is a guardrail — preserves the measurement-infrastructure cap. A 0 means no holdout for that segment; the rule simply doesn't fire on that row. UI shows a soft warning ("low holdout reduces ROI measurement power for this segment") when the value drops below 3.
 | AH01 | Active 0–6mo $50+ | 3,200 | 8.2% | $72 | $18,893 | $0.48 | $1,536 | $17,357 | 0.67% | +7.53% | ✅ Include |
 | AH02 | Active 0–6mo $25–49 | 5,100 | 6.1% | $38 | $11,818 | $0.48 | $2,448 | $9,370 | 1.26% | +4.84% | ✅ Include |
 | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
@@ -561,7 +565,7 @@ Two co-primary axes: **lifecycle stage** (drives messaging/creative) and **RFM**
 | Decision | TLC Baseline | HRI Decision | Rationale |
 | --- | --- | --- | --- |
 | Active/lapsed boundary | 24 months | **12 months** | 13–24mo responds at lapsed rates. Earlier intervention. |
-| Mid-level entry | $500 lifetime cumulative + no DM $500 | **$750 cumulative over last 24 months, no upper cap** (v3.3) | Bill 2026-04-28: split-the-difference floor between TLC's $500 and prior $1,000 spec; lifting the cap captures non-portfolio donors with $5K+ recent giving (44 donors at last refresh). 24-month cumulative (not lifetime) aligns with TLC's historical baseline math and Faircom's expected file size. |
+| Mid-level entry | $500 lifetime cumulative + no DM $500 | **$750 cumulative over last 24 months, no upper cap** (v3.3) | Bill 2026-04-28: split-the-difference floor between TLC's $500 and prior $1,000 spec; lifting the cap captures non-portfolio donors with $5K+ recent giving (44 donors at last refresh). 24-month cumulative (not lifetime) aligns with TLC's historical baseline math (TLC ran every prior HRI campaign; Faircom takes over May 1, 2026). |
 | Mid-Level Prospect tier | Separate $500–$999.99 cohort | **Eliminated** (v3.3) | Sub-$750 active donors route to active housefile / lapsed RFM. Reduces operator decision surface; can be reinstated if Erica/Jessica need the prospect distinction for ask-string or package routing. |
 | Deep lapsed cutoff | 36 months hard stop | **48 months** with break-even gating | Research shows profitability 3–5 years deep for $100+ donors. |
 | RFM monetary basis | Likely HPC | **Average gift** for RFM scoring | Better response predictor. HPC/MRC still used for ask strings. |
@@ -586,15 +590,22 @@ The Segmentation Builder treats Cornerstone as a binary toggle at waterfall posi
 
 ### 5.5.1 Major Donor In-House Suppression (renamed v3.3)
 
-The Salesforce field `TLC_Donor_Segmentation__c` is renamed to `Major_Donor_In_House__c`. Picklist reduces from three values (`Major - In House`, `Mid - TLC`, blank) to two: `In House` and blank. The 574 records previously flagged `Mid - TLC` are cleared to null by Bekah as part of the rename.
+The Salesforce field `TLC_Donor_Segmentation__c` was renamed to `Major_Donor_In_House__c` on 2026-04-28 (architect-executed via Tooling API). Picklist reduced from three values (`Major - In House`, `Mid - TLC`, blank) to two:
 
-**Semantic shift:** previously this field was a label TLC was supposed to honor in their segmentation but did not act on consistently. v3.3 promotes it to a **Tier 2 always-on suppression toggle** (default ON). Donors flagged `In House` are suppressed from any mailing where a Major Gift Portfolio segment is assigned — they are managed in-house by Erica via portfolio reports, not via direct mail.
+- **`Major - In House`** — currently 166–174 records (live count drifts as Bekah works). This is the existing value, kept as-is to avoid migrating ~174 records' data.
+- **blank** — all other accounts.
+
+The 574 records previously flagged `Mid - TLC` were cleared to null and the `Mid - TLC` value was removed from the picklist. If Bekah later renames the active value to `In House` (shorter; matches the field name), no code change is required — the builder's suppression logic is whitespace-stripped and matches both forms.
+
+**Semantic shift:** previously this field was a label TLC was supposed to honor in their segmentation but did not act on consistently. v3.3 promotes it to a **Tier 2 always-on suppression toggle** (default ON). Donors flagged in-house are suppressed from any mailing where a Major Gift Portfolio segment is assigned — they are managed in-house by Erica via portfolio reports, not via direct mail.
 
 **Toggle semantics:**
 - **Default ON (suppress):** flagged donors removed from the mailable universe even if they otherwise qualify for Major Gift Portfolio (MJ01) or any RFM position.
 - **OFF (include):** flagged donors flow through the waterfall normally. Used only when an in-house-only mailing is run (rare). When OFF, the campaign uses the **N campaign prefix** (see §9.1) so the in-house cohort is routed to a distinct file/segment.
 
-**Migration risk:** the SF field rename invalidates any external query that references `TLC_Donor_Segmentation__c`. Verified 2026-04-28 with operator: no HRI repos reference the field; no migration script needed beyond the Bekah picklist cleanup and SF rename.
+**Implementation note (forward-compatible match):** the builder's suppression code matches the in-house flag with case-insensitive whitespace-stripped comparison (e.g., `value.strip().lower() in {"major - in house", "in house", "major-in-house"}`) so that any future label cleanup by Bekah will not require a code change.
+
+**Migration risk:** the SF field rename invalidates any external query that references `TLC_Donor_Segmentation__c`. Verified 2026-04-28 with operator: no HRI repos reference the field. The rename was executed with no consumer breakage — 9 SF page-layout dependencies auto-updated to the new API name.
 
 ---
 
@@ -767,7 +778,7 @@ These rules operate on the segmented universe after donors have been assigned to
 | Break-even floor | CPP ÷ Avg Gift | **Always active** | Auto-suppress segments below floor for 3+ consecutive campaigns |
 | Response rate floor | 0.8% | **Always active** | TLC-era rule (August memo). Starting point pending Campaign Scorecard segment-level data. |
 | Frequency cap | 6 solicitations/year | **Toggle: OFF (first 2 campaigns)** | Provisional default — no internal or external benchmark. Ships disabled. Enable after VeraData calibration provides benchmarked value. Tracks cumulative mailings per donor per FY. **Currently a no-op** — `frequency` field is not populated, so even if toggle is flipped ON the rule has nothing to gate on. |
-| Holdout percentage | 5% of suppressed segments | **Toggle: ON** | Random sample retained for ROI measurement |
+| Holdout percentage | 5% per segment, **per-segment configurable** (v3.4) | **Per-segment column** in scenario editor; default 5; range 0–5; integer | Random sample retained for ROI measurement. Replaces the global ON/OFF toggle. Operator can reduce per segment when the trade-off is justified; cap at 5% prevents over-holding. UI shows soft warning when row value < 3% ("low holdout reduces ROI measurement power"). When value = 0, the holdout rule does not fire on that segment. |
 
 **Suppression audit log:** Every suppression action — both donor-level and segment-level — is logged with donor ID (or Account ID), rule triggered, tier, and campaign ID. The raw audit log is written to a **Google Drive CSV file** (one file per run, archived alongside the output files in the designated folder). The MIC never holds donor-level suppression data. Aggregate suppression counts by rule are surfaced in the Draft tab and the Apps Script UI summary (e.g., "Tier 1 Deceased: 340. Tier 2 Newsletter Only: 1,200. Recent Gift: 800. Frequency Cap: 340."). If total suppression exceeds 15% of the pre-suppression universe, the system flags for review in the UI.
 
@@ -1295,7 +1306,7 @@ Two tabs in the Apps Script **web app UI** (not the MIC sheet) populated from th
 
 4. **Tier 3 — DELETED in v3.3.** Reference tab should NOT render a Tier 3 section. If any pre-v3.3 deploy of the Reference HTML still shows Tier 3, regenerate from the v3.3 spec at next deploy.
 
-5. **Segment-Level Suppression Rules** — columns: Rule, Default, State (toggleable/always), Notes. Includes: Recent-gift window, Break-even floor, Response rate floor, Frequency cap, Holdout percentage. Source: SPEC §6.2.2.
+5. **Segment-Level Suppression Rules** — columns: Rule, Default, State (toggleable/always/per-segment), Notes. Includes: Recent-gift window, Break-even floor, Response rate floor, Frequency cap, Holdout percentage (per-segment column in scenario editor as of v3.4). Source: SPEC §6.2.2.
 
 6. **Ask String Math** — narrative section explaining:
   - Basis selection per segment (HPC for active/mid-level/cornerstone, MRC for lapsed, first gift for new donor).

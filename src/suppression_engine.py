@@ -40,14 +40,16 @@ DEFAULT_SUPPRESSION_TOGGLES = {
     "break_even_floor":      True,    # Always active
     "response_rate_floor":   True,    # Always active
     "frequency_cap":         False,   # OFF for first 2 campaigns; field unpopulated
-    "holdout":               True,    # 5% holdout ON
+    # v3.4: holdout removed as a global toggle. Now a per-segment column
+    # in the Step 3 scenario editor (range 0–5, default 5). The
+    # parameter below is used as the per-segment default.
 }
 
 DEFAULT_SUPPRESSION_PARAMS = {
     "recent_gift_window_days": 45,
     "response_rate_floor_pct": 0.8,
     "frequency_cap_per_fy": 6,
-    "holdout_pct": 5.0,
+    "holdout_pct": 5.0,   # v3.4: per-segment default applied to new scenario rows
 }
 
 

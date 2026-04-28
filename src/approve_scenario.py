@@ -120,10 +120,12 @@ def approve_scenario(
                    "major_gift", "mid_level", "mid_level_prospect"]:
             forced[tk] = True
         # Tier 2/3 + recent-gift + freq cap suppressed too — flipped
-        # to OFF so the suppression engine skips them.
+        # to OFF so the suppression engine skips them. Holdout is no
+        # longer a toggle (v3.4) — Nuclear zeroes the per-segment
+        # values below so no donors are held out.
         for tk in ["newsletter_only", "match_only", "no_name_sharing",
                    "xmas_catalog_cap", "xmas_easter_cap",
-                   "recent_gift_window", "frequency_cap", "holdout"]:
+                   "recent_gift_window", "frequency_cap"]:
             forced[tk] = False
         toggles = forced
         logger.info("  NUCLEAR MODE: GROUP toggles forced ON; "
@@ -150,21 +152,33 @@ def approve_scenario(
     logger.info(f"  Target: {scenario.get('target_type')} = {scenario.get('target_value')}")
     logger.info("=" * 60)
 
-    # Convert scenario.segments → segment_overrides dict
+    # Convert scenario.segments → segment_overrides dict (for budget
+    # fitting) and a separate holdout_pct_by_segment map (for v3.4
+    # per-segment holdout sampling).
     segment_overrides = {}
+    holdout_pct_by_segment = {}
     for s in scenario.get("segments", []):
         code = s.get("code")
         if not code:
             continue
         include = s.get("include", True)
         percent = s.get("percent", 100)
-        # Only include in overrides if non-default
+        # Holdout %: integer 0–5; default 5. Coerce / clamp to be safe;
+        # the UI also enforces, but defense in depth.
+        try:
+            holdout_pct = int(s.get("holdout_pct", 5))
+        except (TypeError, ValueError):
+            holdout_pct = 5
+        holdout_pct = max(0, min(5, holdout_pct))
+        holdout_pct_by_segment[code] = holdout_pct
+        # Only include in budget overrides if non-default include/percent
         if not include or percent < 100:
             segment_overrides[code] = {
                 "include": include,
                 "percent_include": percent if include else 0,
             }
     logger.info(f"  Segment overrides: {len(segment_overrides)} segments")
+    logger.info(f"  Holdout by segment: {holdout_pct_by_segment}")
 
     # --- Step 1: Load accounts (BQ preferred) ---
     t0 = time.time()
@@ -308,6 +322,16 @@ def approve_scenario(
     # path passes selected_campaigns=None so output_files keeps the
     # one-pair shape; multi-campaign passes the full list and the
     # generator emits one Print + one Matchback per campaign.
+    #
+    # v3.4: per-segment holdout. Build the segment→pct map from the
+    # scenario; under Nuclear, zero everything so no donors are held
+    # out (Nuclear is rule-bypass + cast-wide). When the scenario
+    # didn't provide a row for a given segment, the output_files
+    # generator falls back to its built-in default (5%).
+    if nuclear:
+        runtime_holdout_by_segment = {code: 0 for code in holdout_pct_by_segment}
+    else:
+        runtime_holdout_by_segment = holdout_pct_by_segment
     t0 = time.time()
     output = generate_output_files(
         waterfall_result, accounts_df, ask_df, reply_tiers, codes_df,
@@ -315,6 +339,7 @@ def approve_scenario(
         lane=campaign_config.get("lane", "Housefile") or "Housefile",
         holdout_pct=0.0 if nuclear else 5.0,
         selected_campaigns=selected_campaigns if multi_mode else None,
+        holdout_pct_by_segment=runtime_holdout_by_segment,
     )
     timings["output_files"] = round(time.time() - t0, 1)
     logger.info(f"[{_elapsed()}s] Output files: printer={output['printer_count']:,}, "

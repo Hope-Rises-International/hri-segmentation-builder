@@ -9,7 +9,7 @@
 </style>
 
 <h1>HRI Segmentation Builder — Button Reference</h1>
-<div class="ref-subtitle">Synced from SPEC.md v3.3 (2026-04-28). Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
+<div class="ref-subtitle">Synced from SPEC.md v3.4 (2026-04-28). Edit the <code>Buttons.html</code> file in the build repo to update; deploy cycle = sync cycle.</div>
 
 <table>
   <thead>
@@ -37,11 +37,11 @@
       <td>Yes — re-run.</td>
     </tr>
     <tr>
-      <td>Edit Scenario (per-segment toggles, % slider, target type)</td>
-      <td>Browser-side what-if. Adjusts inclusion / quantity. No new SF query.</td>
-      <td>Iterating to hit target.</td>
+      <td>Edit Scenario (per-segment toggles, % slider, Holdout %, target type)</td>
+      <td>Browser-side what-if. Adjusts inclusion / quantity / per-segment Holdout % (v3.4, default 5, range 0–5; soft orange warning below 3). No new SF query.</td>
+      <td>Iterating to hit target; tuning per-segment ROI measurement vs. mailable count trade-off.</td>
       <td>UI only until Save / Approve.</td>
-      <td>Yes — toggle back.</td>
+      <td>Yes — toggle back / Reset Overrides.</td>
     </tr>
     <tr>
       <td>Save Scenario</td>
