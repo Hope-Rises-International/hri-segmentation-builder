@@ -82,7 +82,7 @@
   <thead><tr><th>#</th><th>Rule</th><th>Field</th><th>Default</th><th>Conditional Logic</th></tr></thead>
   <tbody>
     <tr><td>1</td><td>No Mail Code</td><td><code>No_Mail_Code__c</code></td><td>ON (always-on toggle)</td><td>v3.3. Was Tier 1; moved here for rare authorized override (events / cornerstone exceptions).</td></tr>
-    <tr><td>2</td><td>Major Donor In-House</td><td><code>Major_Donor_In_House__c</code> = 'In House'</td><td>ON (always-on toggle)</td><td>v3.3. Renamed from <code>TLC_Donor_Segmentation__c</code>. Suppresses in-house major donors. Toggle OFF only when running an N-prefix in-house-only campaign.</td></tr>
+    <tr><td>2</td><td>Major Donor In-House</td><td><code>Major_Donor_In_House__c</code> ∈ {'Major - In House', 'In House'}</td><td>ON (always-on toggle)</td><td>v3.3. Renamed from <code>TLC_Donor_Segmentation__c</code>. Live picklist value is "Major - In House" (166 records as of 2026-04-28); SPEC §5.5.1 anticipates a cleanup to "In House" — code matches both forms. Toggle OFF only when running an N-prefix in-house-only campaign.</td></tr>
     <tr><td>3</td><td>Newsletters Only</td><td><code>Newsletters_Only__c</code></td><td>ON</td><td>Campaign-type conditional — INCLUDE when campaign type = Newsletter.</td></tr>
     <tr><td>4</td><td>Match Only</td><td><code>Match_Only__c</code></td><td>ON</td><td>Campaign-type conditional — INCLUDE only when campaign type = Match.</td></tr>
     <tr><td>5</td><td>1 Mailing Xmas Catalog</td><td><code>X1_Mailing_Xmas_Catalog__c</code></td><td>ON</td><td>Frequency conditional — donor limited to 1 Christmas mailing per FY.</td></tr>
@@ -109,10 +109,11 @@
 <div class="narrative">
 <p><strong>Basis selection per segment family:</strong></p>
 <ul>
-  <li><strong>HPC</strong> (<code>npo02__LargestAmount__c</code>) — Active Housefile (AH*), Mid-Level (ML*), Mid-Level Prospect (MP*), Cornerstone (CS01), Major Gift (MJ01), Sustainer (SU01).</li>
+  <li><strong>HPC</strong> (<code>npo02__LargestAmount__c</code>) — Active Housefile (AH*), Mid-Level (ML*), Cornerstone (CS01), Major Gift (MJ01), Sustainer (SU01).</li>
   <li><strong>MRC</strong> (<code>npo02__LastOppAmount__c</code>) — Lapsed Recent (LR*), Deep Lapsed (DL*), CBNC (CB01).</li>
-  <li><strong>First Gift</strong> — New Donor (ND01).</li>
+  <li><strong>First Gift</strong> — New Donor (ND01) <em>(deprecated path; New Donor is pre-empted at Tier 1.5 in v3.3 and the welcome series uses its own workflow — code retained for future reuse).</em></li>
 </ul>
+<p style="font-size:11px;color:var(--hri-muted)"><em>v3.3: Mid-Level Prospect (MP01) eliminated; sub-$750 active donors route to AH/LR. Code retained as deprecated.</em></p>
 <p><strong>Ladder formula:</strong> AskAmount1 = basis × 1.0,  AskAmount2 = basis × 1.5,  AskAmount3 = basis × 2.0.</p>
 <p><strong>Rounding:</strong> UP to nearest $5 below $100, UP to nearest $25 at/above $100. Never round down.</p>
 <p><strong>Floor / Ceiling:</strong> Floor = $15. Ceiling = $4,975 (rounded down to a $25 increment).</p>
@@ -182,11 +183,11 @@
     <tr><td>Deep Lapsed (DL*)</td><td>P01</td><td></td></tr>
     <tr><td>CBNC (CB*)</td><td>P01</td><td></td></tr>
     <tr><td>Mid-Level (ML*)</td><td>P02</td><td>High-touch: better paper, first-class postage.</td></tr>
-    <tr><td>Mid-Level Prospect (MP*)</td><td>P01</td><td>Standard with upgrade messaging.</td></tr>
+    <tr><td>Mid-Level Prospect (MP*)</td><td>P01</td><td><em>Deprecated v3.3 — cohort eliminated; row kept so historical Matchback / Campaign_Segment__c records still resolve.</em></td></tr>
     <tr><td>Cornerstone (CS*)</td><td>P03</td><td>Legacy ALM branding.</td></tr>
     <tr><td>Major Gift (MJ*)</td><td>P04</td><td>Custom package; lettershop suppresses asks display.</td></tr>
     <tr><td>Sustainer (SU*)</td><td>P01</td><td></td></tr>
-    <tr><td>New Donor (ND*)</td><td>P01</td><td></td></tr>
+    <tr><td>New Donor (ND*)</td><td>P01</td><td><em>v3.3: not assigned by the standard waterfall — pre-empted at Tier 1.5. Welcome series uses its own workflow.</em></td></tr>
   </tbody>
 </table>
 <p>PackageCode mapping per segment group from <code>src/config.py</code>; the table above is the default ladder. Lettershop sorts on PackageCode to route creative.</p>
