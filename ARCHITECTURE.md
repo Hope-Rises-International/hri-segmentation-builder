@@ -1,6 +1,143 @@
 # ARCHITECTURE — HRI Segmentation Builder
 
-*Last updated: 2026-04-20, after Historical Baseline build (Phases 1–2).*
+*Last updated: 2026-04-28, after SPEC v3.4 amendment.*
+
+## v3.4 amendment surface area (2026-04-28)
+
+Small-scope amendment. Holdout moves from a global ON/OFF toggle to a
+per-segment column in the Step 3 scenario editor.
+
+- **`apps-script/Index.html`** —
+  - `SUPPRESSION_TOGGLES`: `holdout` row removed.
+  - Step 3 segment-table renderer (`renderDraftHTML`): new `Holdout %`
+    column adjacent to `% Incl`, plus two derived columns (`Holdout`,
+    `Mailable`) so the operator sees both gross fit and the post-holdout
+    mailable count side-by-side. Soft orange-text warning + ⚠ icon when
+    a row's value drops below 3, with a tooltip explaining the
+    measurement-power trade-off.
+  - `draftSegments` rows carry `holdout_pct` (default 5; range 0–5
+    integer). `onSegmentHoldout` clamps inputs to that band.
+  - `computeScenarioTotals` subtracts holdout from cost / revenue, so
+    auto-fit and the Current target indicator agree with the per-row
+    numbers.
+  - Scenario-payload serializers (Approve flow + Save scenario flow)
+    include `holdout_pct` for each segment.
+- **`src/output_files.py`** —
+  - `generate_output_files` gains a `holdout_pct_by_segment` kwarg
+    (mapping `segment_code` → integer 0–5). Per-segment sampling
+    iterates the codes_df groupby; each segment uses its own seed
+    derived from `(holdout_seed * 1_000_003) ^ hash(seg_code)` so
+    samples are independent and stable across re-runs of the same
+    scenario.
+  - Legacy `holdout_pct` (single global float) kept for ad-hoc /
+    diagnostic callers — falls through unchanged when
+    `holdout_pct_by_segment` is None.
+- **`src/suppression_engine.py`** —
+  - `holdout` removed from `DEFAULT_SUPPRESSION_TOGGLES` (no longer a
+    toggle).
+  - `DEFAULT_SUPPRESSION_PARAMS["holdout_pct"]` retained as the
+    per-segment default applied to new scenario rows.
+- **`src/approve_scenario.py`** —
+  - Builds `holdout_pct_by_segment` from `scenario.segments[*].holdout_pct`
+    (default 5, clamped 0–5) and passes it through to
+    `generate_output_files`.
+  - Nuclear mode zeroes the per-segment map so no donors are held out.
+  - Nuclear toggle-forcing list no longer references `holdout` (it's
+    not a toggle).
+- **Audit log shape unchanged.** Each held-out donor's row still
+  carries `Holdout=true`; only the per-segment fraction varies. No
+  Matchback / Drive-output schema change.
+- **Migration: none.** Default state (every row at 5) reproduces v3.3
+  behavior. Operator dial-down is purely additive.
+
+---
+
+## v3.3 amendment surface area (2026-04-28)
+
+This amendment is a behavior change, not new infrastructure — the four
+Cloud Functions, MIC sheet, GCS bucket, and Apps Script web app all
+keep their identities. What moved:
+
+- **SF/BQ extract** (`src/salesforce_client.py`, `src/bq_extract.py`): the
+  Account SOQL now pulls `Type`, `RecordType.Name`, and the renamed
+  `Major_Donor_In_House__c` (was `TLC_Donor_Segmentation__c`). Live-SF
+  path flattens the nested RecordType dict to `RecordTypeName`;
+  `bq_reader` renames `RecordType_Name` to match so callers see one name.
+  Re-running the nightly extract is required after deploy so
+  `accounts_raw` picks up the new columns.
+- **Waterfall** (`src/waterfall_engine.py`):
+  - Tier 1 grew two new rules: Account.Type ∈ {DAF, Government} and
+    RecordType.Name ∈ {ALM Foundation Organization, ALM Grants/Partners
+    Household, ALM Grants/Partners Organization}. Defense in depth —
+    the current SOQL `WHERE` already filters to Household Account, but
+    the suppression travels with the engine for any future RFM-bypassing
+    flow (cornerstone-only, in-house-only).
+  - Tier 1.5 — a new pre-emption pass between Tier 1 and the GROUP
+    bucket — removes any donor with `Lifecycle_Stage__c == 'New Donor'`.
+    Hard / always-on; the welcome series itself runs as a separate
+    workflow with all GROUP toggles OFF.
+  - GROUP_EXCLUDE shrinks by two rules: `new_donor` (promoted to
+    Tier 1.5) and `mid_level_prospect` (cohort eliminated).
+  - Mid-Level basis switches from `npo02__TotalOppAmount__c` (lifetime)
+    to `Total_Gifts_Last_365_Days__c + Total_Gifts_730_365_Days_Ago__c`
+    (24-month). Floor moves from $1,000 to **$750**, ceiling lifts to
+    `math.inf`. This shrinks the cohort meaningfully — last A2651 audit
+    suggests ~1,068 vs ~3,196 under lifetime — by design, not regression.
+  - Position 11 Deep Lapsed reads from a new `lifetime_cumulative`
+    series (kept under that explicit name) because the donor's 24-month
+    cumulative is $0 by definition. Easy place to break later if
+    someone forgets — comment in code calls it out.
+  - Positions renumbered: New Donor at position 6 and MP01 at position 9
+    are gone; AH/LR/DL/CB shift down accordingly.
+- **Suppression** (`src/suppression_engine.py`):
+  - Tier 1 → Tier 2 for `No_Mail_Code__c` (toggleable always-on so rare
+    authorized cases — events, cornerstone exceptions — can override).
+  - Tier 2 gains `major_donor_in_house` (suppress when value
+    == `"In House"`). Default ON; OFF requires N-prefix campaign per
+    the validator.
+  - Tier 2 drops `Newsletter_and_Prospectus_Only__c` (Bekah
+    consolidating in SF) and `No_Name_Sharing__c` (acquisition co-op
+    only, never DM).
+  - Tier 3 deleted entirely. The 14 legacy fields previously listed are
+    no longer used; X1/X2 Christmas frequency caps were promoted to
+    Tier 2.
+- **Routing** (`src/config.py`):
+  - `COHORT_PREFIX_RULES`: J entries removed (architect's earlier J
+    prefix was a misinterpretation). Major Gift drops to M-only. ND01
+    and MP01 absent from the routing table — neither cohort reaches
+    appeal-code generation under v3.3.
+  - New `INHOUSE_TOGGLE_KEY` / `INHOUSE_PREFIX = 'N'` constants. The
+    validator requires an N-prefix campaign in the selection whenever
+    the `major_donor_in_house` Tier 2 toggle is OFF. Each cohort still
+    routes to one and only one campaign per run.
+- **Apps Script UI** (`apps-script/Index.html`,
+  `apps-script/Reference.html`, `apps-script/Buttons.html`):
+  - Waterfall toggle list drops `mid_level_prospect` and `new_donor`.
+  - Suppression toggle list adds `no_mail_code` and
+    `major_donor_in_house`, drops `no_name_sharing`. Recent-gift label
+    updated to "(spec'd, unbuilt)".
+  - Multi-select campaign filter accepts A / M / N (J removed).
+  - Reference tab gets a Tier 1.5 Pre-emption section above Tier 2;
+    Tier 3 section is replaced with a "DELETED (v3.3)" callout. Per-
+    position waterfall table renumbered.
+  - Buttons tab gains a Major Donor In-House row; multi-select row
+    rewritten for A / M / N.
+
+What stayed the same:
+
+- All authentication paths, GCP project layout, Drive folder, MIC sheet
+  ID, Apps Script project ID. Web app URL unchanged.
+- Multi-campaign output split (one Print + one Matchback per campaign),
+  Nuclear mode (forces GROUP toggles ON, bypasses Tier 2 + recent-gift
+  + freq cap + holdout, audit log to Drive), and per-campaign cohort
+  prefix routing. The validator's shape is unchanged; only the rule set
+  inside it changed.
+- Historical baseline grid + Scenario Editor + budget fitting. None of
+  v3.3 touches these.
+
+---
+
+*Earlier section, retained from Historical Baseline build:*
 
 ## 1. What this service does
 The Segmentation Builder is HRI's direct-mail segmentation engine. Given a planned campaign (from MIC Campaign Calendar), it assigns every active donor to one HRI segment via a deterministic waterfall + suppression pipeline, projects per-segment economics from historical actuals, lets the operator edit a scenario in the browser (auto-fit to target / adjust per-segment), and on approval generates printer + matchback files and upserts segment rows to Salesforce. The **Historical Baseline** layer (this build) replaces the previous single-campaign baseline with a multi-campaign grid: for each HRI segment × campaign type (Shipping, Tax Receipt, Year End, Easter, Renewal, Faith Leaders, Shoes, Whole Person Healing, FYE, Newsletter, Acquisition, Other — each with chaser variants — plus Overall) it computes contact-weighted response rate and average gift. The operator now picks either a Campaign Type (default) or a Specific Prior Campaign, and the Scenario Editor uses that to populate Hist. RR / Hist. Avg Gift / projected net per segment.
