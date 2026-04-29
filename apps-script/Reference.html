@@ -191,6 +191,12 @@
   </tbody>
 </table>
 <p>PackageCode mapping per segment group from <code>src/config.py</code>; the table above is the default ladder. Lettershop sorts on PackageCode to route creative.</p>
+<table>
+  <thead><tr><th>Override</th><th>Trigger</th><th>Target Package</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>California Shipping Panel</td><td>Campaign type ∈ {Shipping, Christmas Shipping, +chaser variants} <strong>AND</strong> donor <code>BillingState='CA'</code></td><td><strong>CA1</strong></td><td>v3.4.1 (2026-04-29). California's charitable-solicitation disclosure rules make the standard shipping creative non-compliant for CA donors. CA1 is a single non-shipping panel that all CA donors fall into for these campaigns regardless of segment. <code>CAVersion</code> column is also set to TRUE for these donors so analytics can break out the CA cohort.</td></tr>
+  </tbody>
+</table>
 
 <h2>12. Output File Columns — Print</h2>
 <table>

@@ -162,6 +162,27 @@ DEFAULT_PACKAGE_CODES = {
     "ND": "P01",
 }
 
+# v3.4.1 (2026-04-29): California panel for Shipping campaigns.
+# Bill: California has charitable-solicitation disclosure requirements
+# that make the standard shipping creative non-compliant. CA donors
+# under any Shipping or Christmas Shipping campaign (incl. chaser
+# variants) route to a single CA panel package — `CA1` — regardless of
+# segment. Cornerstone, Mid-Level, Major Gift CA donors all bucket
+# into CA1 because the lettershop only has one non-shipping creative.
+# If we ever need per-segment CA variants, switch this constant to a
+# segment-prefix dict (CA1_AH, CA1_ML, etc.).
+CA_SHIPPING_PACKAGE = "CA1"
+
+# Shipping campaign-type labels (per src/campaign_types.py classifier
+# output) that trigger the CA panel override. Includes base + chaser
+# variants of Shipping and Christmas Shipping.
+SHIPPING_CAMPAIGN_TYPES = {
+    "Shipping",
+    "Shipping Chaser",
+    "Christmas Shipping",
+    "Christmas Shipping Chaser",
+}
+
 
 def get_package_code(segment_code, package_overrides=None):
     """Get PackageCode for a segment code.

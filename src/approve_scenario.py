@@ -314,6 +314,11 @@ def approve_scenario(
         waterfall_result, accounts_df,
         campaign_appeal_code=campaign_appeal_code if not multi_mode else None,
         selected_campaigns=selected_campaigns if multi_mode else None,
+        # v3.4.1: pass campaign metadata so the engine can detect
+        # Shipping campaigns and route CA donors to the CA1 panel.
+        campaign_name=campaign_config.get("campaign_name", ""),
+        campaign_lane=campaign_config.get("lane", ""),
+        is_followup=bool(campaign_config.get("is_followup", False)),
     )
     timings["codes"] = round(time.time() - t0, 1)
 

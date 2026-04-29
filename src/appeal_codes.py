@@ -27,7 +27,9 @@ import numpy as np
 from config import (
     SEGMENT_CODES, fy_label_for_date, get_package_code,
     resolve_campaign_for_segment,
+    CA_SHIPPING_PACKAGE, SHIPPING_CAMPAIGN_TYPES,
 )
+from campaign_types import classify_campaign
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,9 @@ def generate_appeal_codes(
     test_flag: str = "CTL",
     package_overrides: dict = None,
     selected_campaigns: list = None,
+    campaign_name: str = "",
+    campaign_lane: str = "",
+    is_followup: bool = False,
 ) -> pd.DataFrame:
     """Generate 9-char and 15-char appeal codes + scanline for all assigned donors.
 
@@ -186,6 +191,18 @@ def generate_appeal_codes(
     else:
         assigned["quantity_reduced"] = False
 
+    # v3.4.1 (2026-04-29): California panel routing for Shipping campaigns.
+    # Detect once, up front. When the campaign is any Shipping / Christmas
+    # Shipping (incl. chaser) variant, donors with BillingState='CA' are
+    # routed to package CA1 instead of their normal segment package, AND
+    # the CAVersion column is set to True. Single non-shipping creative
+    # for the whole CA cohort (regardless of segment) — see
+    # config.CA_SHIPPING_PACKAGE comment for rationale.
+    detected_type = classify_campaign(campaign_name, campaign_lane, is_followup) if campaign_name else ""
+    is_shipping_campaign = detected_type in SHIPPING_CAMPAIGN_TYPES
+    if is_shipping_campaign:
+        logger.info(f"  CA panel routing active — campaign type {detected_type!r} → CA1 for CA donors")
+
     results = []
     unmatched_segments = set()  # for post-loop diagnostics
     for _, row in assigned.iterrows():
@@ -226,6 +243,26 @@ def generate_appeal_codes(
         # Package code (configurable via overrides or defaults)
         package = get_package_code(seg_code, package_overrides)
 
+        # v3.4.1: Shipping-campaign CA override.
+        # Compute donor's CA-ness from BillingState, then apply the
+        # package + flag override only when both conditions hold.
+        # `ca_version` doubles as the operator-facing analytics flag in
+        # the output schema and as the override gate here, so the two
+        # always agree (no risk of CAVersion=True with package=P01 or
+        # package=CA1 with CAVersion=False).
+        state = accts.get("BillingState", pd.Series("", index=accts.index)).get(acct_id, "")
+        is_ca_donor = str(state).strip().upper() in ("CA", "CALIFORNIA")
+        if is_shipping_campaign and is_ca_donor:
+            package = CA_SHIPPING_PACKAGE
+            ca_version = True
+        elif is_ca_version_campaign and is_ca_donor:
+            # Legacy explicit-flag path retained for callers that already
+            # pass is_ca_version_campaign without using the new
+            # campaign_name autodetect.
+            ca_version = True
+        else:
+            ca_version = False
+
         # 15-char internal appeal code: [Program][FY][Campaign][Segment][Package][Test]
         # Positions: 1(program) + 2(FY) + 2(campaign) + 4(segment) + 3(package) + 3(test) = 15
         appeal_15 = f"{program}{donor_fy}{donor_month}{seg_code}{package}{test_flag}"
@@ -242,12 +279,6 @@ def generate_appeal_codes(
         # the scanline-9 prefix even though the CD/appeal differ).
         scanline = format_scanline(donor_id_9, appeal_9)
         missing_id = donor_id_9 == "000000000"
-
-        # CA version flag
-        ca_version = False
-        if is_ca_version_campaign:
-            state = accts.get("BillingState", pd.Series("", index=accts.index)).get(acct_id, "")
-            ca_version = str(state).strip().upper() in ("CA", "CALIFORNIA")
 
         results.append({
             "account_id": acct_id,

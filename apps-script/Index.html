@@ -1387,6 +1387,10 @@
         budget_cost: selectedCampaign.budget_cost,
         campaign_type: selectedCampaign.campaign_type,
         lane: selectedCampaign.lane || 'Housefile',
+        // v3.4.1: forwarded so the server-side classifier can detect
+        // Shipping vs Shipping Chaser. The CA panel override fires on
+        // both, but the audit-log type label is more accurate.
+        is_followup: !!selectedCampaign.is_followup,
       },
       // Item C: full multi-campaign list (always includes the primary).
       selected_campaigns: sel.map(function(c) {
