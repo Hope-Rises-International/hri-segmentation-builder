@@ -25,6 +25,36 @@ VALID_TRANSITIONS = {
 
 MIC_SEGMENT_DETAIL_TAB = "Segment Detail"
 
+# Pinned column order for the Segment Detail tab (v3.4.1, 2026-04-30).
+# This is the canonical schema downstream readers should rely on. Any
+# new flow that wants to add a column MUST extend this list — adding to
+# the underlying segment_summary alone won't surface the column anymore,
+# preventing the silent-drift problem that previously bit the Phase 4
+# forecasting reader (live tab had Full Universe at column N where the
+# SPEC §3.1 expected Approved At — schema validator correctly halted).
+#
+# Order matches the live tab on 2026-04-30 (18 columns, A–R).
+SEGMENT_DETAIL_COLUMNS = [
+    "Campaign ID",            # A — upsert key (with Segment Code)
+    "Segment Code",           # B — upsert key
+    "Segment Name",           # C
+    "Quantity",               # D — full-universe count (pre-trim)
+    "Hist. Response Rate",    # E
+    "Hist. Avg Gift",         # F
+    "Proj. Gross Revenue",    # G
+    "CPP",                    # H
+    "Total Cost",             # I
+    "Proj. Net Revenue",      # J
+    "Break-Even Rate",        # K
+    "Margin",                 # L
+    "Status",                 # M
+    "Full Universe",          # N — Pass-1 count, retained when budget fit applied
+    "Budget Fit",             # O — Pass-2 fitted count after target trim
+    "Include",                # P — operator scenario include flag
+    "% Include",              # Q — operator scenario percent override
+    "Approved At",            # R — ISO timestamp of approve write
+]
+
 
 def _ensure_worksheet(sh, title, rows=1000, cols=20):
     try:
@@ -74,9 +104,16 @@ def approve_projection(
 
     combined = pd.concat([existing_df, new_rows], ignore_index=True) if not existing_df.empty else new_rows
 
+    # v3.4.1 schema pin (2026-04-30): reindex `combined` to the
+    # canonical SEGMENT_DETAIL_COLUMNS list. Drops any stray columns
+    # left over from an earlier schema, fills missing columns with
+    # empty strings, and forces a stable column order so downstream
+    # readers can rely on either column index or column name.
+    combined = combined.reindex(columns=SEGMENT_DETAIL_COLUMNS, fill_value="")
+    headers = SEGMENT_DETAIL_COLUMNS
+
     # Write back — resize worksheet to fit data
     ws.clear()
-    headers = combined.columns.tolist()
     values = [headers]
     for _, row in combined.iterrows():
         values.append([str(v) if pd.notna(v) else "" for v in row])
