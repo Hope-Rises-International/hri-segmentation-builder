@@ -103,6 +103,15 @@ Do NOT create a local `learnings.md` or `hri-stack-learnings.md` in this repo. I
 - **Open:** Bill's test queue (production validation): A2651 standard housefile (expect ML01 ≈ 1,068 down from ~3,196 under lifetime); A2651 + M2651 combined; A2643 cornerstone-only; in-house toggle ON expected to suppress 166 records; trivial N-prefix in-house test if practical; per-segment holdout walk-through (default vs single-segment 0 vs mixed values vs Nuclear zeros).
 
 ---
+**[2026-04-29 | Bill | CA1 panel routing for Shipping campaigns + ZIP/Faircom note]**
+- **Decided:** California donors on Shipping / Christmas Shipping campaigns (incl. chaser variants) route to a single non-shipping package code `CA1`, regardless of segment. Lettershop sorts on PackageCode, not on the CAVersion Boolean — the column had no caller wiring it. v3.4.1 closes that gap: CAVersion=True now precisely means "this donor's package was overridden to CA1 on this campaign." Detection uses the existing `src/campaign_types.classify_campaign()` (single source of truth, no JS/Python drift).
+- **Decided:** ZIP padding bug Bill reported (Brian Dobbs, Cushing ME, ZIP shown as `4563`) is a **viewer artifact, not a code bug**. Pulled the actual Print CSV from Drive and confirmed `"04563"` is in the file. Sheets default-imports strip leading zeros from bare 5-digit numerics even when RFC-4180 quoted; ZIPs with hyphens (`01742-4111` etc.) preserve correctly because the hyphen makes them un-parseable as numbers. Faircom's parsers are RFC-4180-aware (industry standard for direct mail), so they'll get `04563`. For Sheets viewing, use File → Import with "Convert text to numbers" set to NO.
+- **Decided:** First Faircom delivery under the v3.x file format should include a one-line note: "ZIP column is RFC-4180 text-quoted; please confirm your import preserves leading zeros for Northeast addresses." After they confirm, drop the note. Cost of getting it wrong = entire NE region undeliverable.
+- **Changed:** `config.py` adds `CA_SHIPPING_PACKAGE = "CA1"` and `SHIPPING_CAMPAIGN_TYPES` set. `appeal_codes.generate_appeal_codes` accepts `campaign_name` / `campaign_lane` / `is_followup`, runs the classifier once, applies CA1 + CAVersion=True per CA donor on shipping campaigns. `approve_scenario` threads campaign metadata through. UI sends `is_followup` in the approve payload. Reference §11 has a new "Override" sub-table documenting the CA1 rule. Apps Script v29 → v31.
+- **Watch out:** CA1 needs a Faircom creative before the next Shipping campaign runs. Worth confirming whether Faircom wants CA1 segregated as a separate file batch or just sorted within the same Print file.
+- **Watch out:** The Staff_Manager assignment audit (asked separately) found "ALM Integration User" holds 630 of 1,167 portfolio records. That's automation, not real portfolio assignment — those donors all currently route to MJ01 because the waterfall treats `Staff_Manager__c IS NOT NULL` as portfolio. If Erica says they're not actively managed, those should be carved out of MJ01 (maybe a new mask: `Staff_Manager__r.Name != "ALM Integration User"`). Decision pending.
+
+---
 
 ## Session Start
 
